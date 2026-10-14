@@ -281,7 +281,7 @@
     "@opentelemetry/resources": "^2.11.0",
     "@opentelemetry/sdk-trace-base": "^2.11.0",
     "@opentelemetry/sdk-trace-node": "^2.11.0",
-    "@playwright/test": "^1.63.0",
+    "@playwright/test": "^1.64.0",
     "@sentry/node": "^10.75.0",
     "@stoplight/spectral-cli": "^6.16.3",
     "@types/node": "^24.13.6",
