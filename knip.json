@@ -18,7 +18,7 @@
     "duplicates",
     "catalog"
   ],
-  "ignoreBinaries": ["yq", "k6", "magick", "osv-scanner"],
+  "ignoreBinaries": ["yq", "k6", "magick", "osv-scanner", "shellcheck", "shfmt"],
   "ignoreDependencies": ["@stoplight/spectral-cli"],
   "ignoreIssues": {
     "tests/helpers/api-contract-checks.js": ["exports"],
