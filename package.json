@@ -303,7 +303,7 @@
     "playwright-extra": "^4.3.6",
     "prettier": "^3.9.10",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
-    "typescript": "^6.0.3"
+    "typescript": "^7.0.2"
   },
   "overrides": {
     "flatted": "3.4.2",
