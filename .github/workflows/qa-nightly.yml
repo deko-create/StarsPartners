@@ -99,7 +99,7 @@ jobs:
 
       - name: Upload nightly auth bootstrap artifacts (${{ matrix.brand.slug }})
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nightly-auth-${{ matrix.brand.slug }}
           if-no-files-found: warn
@@ -220,7 +220,7 @@ jobs:
 
       - name: Upload nightly full artifacts (${{ matrix.brand.key }} | ${{ matrix.mode }})
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nightly-full-${{ matrix.brand.slug }}-${{ matrix.mode }}
           if-no-files-found: warn
@@ -320,7 +320,7 @@ jobs:
 
       - name: Upload nightly providers artifacts (${{ matrix.brand.slug }} | shard ${{ matrix.shard }})
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nightly-providers-${{ matrix.brand.slug }}-shard-${{ matrix.shard }}
           if-no-files-found: warn
@@ -419,7 +419,7 @@ jobs:
 
       - name: Upload nightly localization artifacts (${{ matrix.brand.key }} | ${{ matrix.mode }} | shard ${{ matrix.shard }})
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nightly-localization-${{ matrix.brand.slug }}-${{ matrix.mode }}-shard-${{ matrix.shard }}
           if-no-files-found: warn
@@ -516,7 +516,7 @@ jobs:
 
       - name: Upload nightly sports artifacts (${{ matrix.brand.key }} | shard ${{ matrix.shard }})
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nightly-sports-${{ matrix.brand.slug }}-shard-${{ matrix.shard }}
           if-no-files-found: warn
