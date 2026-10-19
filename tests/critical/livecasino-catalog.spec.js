@@ -3,6 +3,7 @@ const path = require('path');
 const { URL } = require('url');
 const { test, expect } = require('../fixtures/qa-test');
 const {
+  clickLocatorRobust,
   detectCloudflare,
   dismissOverlays,
   markBlocked,
@@ -111,6 +112,12 @@ async function firstVisibleLocator(root, selectors) {
     }
   }
   return null;
+}
+
+async function enterSearchQuery(input, query) {
+  await input.click({ timeout: 3000 }).catch(() => null);
+  await input.fill('');
+  await input.pressSequentially(String(query || ''), { delay: 35 });
 }
 
 async function hasChallengeTokenPage(page) {
@@ -234,13 +241,44 @@ async function closeLiveSearchModal(page) {
     '.t-game-search-modal button:has-text("Close")',
   ]);
   if (closeBtn) {
-    await closeBtn.click({ timeout: 5000 }).catch(() => null);
+    const closedByTarget = await closeBtn
+      .evaluate((element) => {
+        if (!element || typeof element.click !== 'function') return false;
+        element.click();
+        return true;
+      })
+      .catch(() => false);
+    if (!closedByTarget) await page.keyboard.press('Escape').catch(() => null);
   } else {
     await page.keyboard.press('Escape').catch(() => null);
   }
 
   await waitForUiSettled(page, 1200);
-  return !(await modal.isVisible({ timeout: 500 }).catch(() => false));
+  await modal.waitFor({ state: 'hidden', timeout: 4000 }).catch(() => null);
+  if ((await modal.count().catch(() => 0)) === 0) return true;
+  // The component remains mounted after closing and Playwright can still treat
+  // its off-canvas wrapper as visible. Validate the interactive search control
+  // instead of the persistent Vue container.
+  const interactiveSearchVisible = await modal
+    .locator('input:not([type="hidden"]), [contenteditable="true"]')
+    .first()
+    .evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      const style = globalThis.getComputedStyle(element);
+      return (
+        rect.width > 0 &&
+        rect.height > 0 &&
+        rect.bottom > 0 &&
+        rect.right > 0 &&
+        rect.top < globalThis.innerHeight &&
+        rect.left < globalThis.innerWidth &&
+        style.display !== 'none' &&
+        style.visibility !== 'hidden' &&
+        Number(style.opacity) !== 0
+      );
+    })
+    .catch(() => false);
+  return !interactiveSearchVisible;
 }
 
 async function openLiveSearch(page) {
@@ -261,16 +299,11 @@ async function openLiveSearch(page) {
     };
   }
 
-  let clicked = await searchBtn
-    .click({ timeout: 7000 })
-    .then(() => true)
-    .catch(() => false);
-  if (!clicked) {
-    clicked = await searchBtn
-      .click({ timeout: 3000, force: true })
-      .then(() => true)
-      .catch(() => false);
-  }
+  let clicked = await clickLocatorRobust(page, searchBtn, {
+    timeout: 7000,
+    waitForNavigation: false,
+    settleTimeout: 500,
+  }).catch(() => false);
   if (!clicked) {
     clicked = await searchBtn
       .evaluate((element) => {
@@ -282,12 +315,22 @@ async function openLiveSearch(page) {
   }
   await waitForUiSettled(page, 1200);
 
+  await page
+    .locator(
+      '.t-game-search-modal input:not([type="hidden"]), .t-game-search-modal [contenteditable="true"]'
+    )
+    .first()
+    .waitFor({ state: 'visible', timeout: 6000 })
+    .catch(() => null);
+
   const modal = page.locator('.t-game-search-modal').first();
   const input = await firstVisibleLocator(page, [
     '.t-game-search-modal input[placeholder*="Game" i]',
     '.t-game-search-modal input[placeholder*="Provider" i]',
     '.t-game-search-modal input[type="search"]',
     '.t-game-search-modal input[type="text"]',
+    '.t-game-search-modal input:not([type="hidden"])',
+    '.t-game-search-modal [contenteditable="true"]',
     '[role="dialog"] input[type="search"]',
     '[role="dialog"] input[type="text"]',
   ]);
@@ -304,6 +347,8 @@ async function openLiveSearch(page) {
 async function collectSearchResultTitles(modalOrPage) {
   const scope = modalOrPage;
   const selectors = [
+    '.t-game-search__content .games-wrapper__item .name',
+    '.t-game-search-modal .games-wrapper__item .name',
     '.t-game-item__hover-name',
     '[class*="game-item" i] [class*="name" i]',
     'a[href*="/casino/"]',
@@ -782,9 +827,14 @@ test.describe('Live Casino Coverage: search/filter interactions', () => {
         }
 
         const query = 'roulette';
-        await search.input.click({ timeout: 3000 }).catch(() => null);
-        await search.input.fill(query);
+        await enterSearchQuery(search.input, query);
         await waitForUiSettled(page, 1200);
+        await (search.modal || page)
+          .locator('.games-wrapper__item .name')
+          .filter({ hasText: /roulette/i })
+          .first()
+          .waitFor({ state: 'visible', timeout: 8000 })
+          .catch(() => null);
 
         const value = (await search.input.inputValue().catch(() => '')).toLowerCase();
         const titles = await collectSearchResultTitles(search.modal || page);
@@ -875,7 +925,7 @@ test.describe('Live Casino Coverage: search/filter interactions', () => {
           });
           return;
         }
-        await search.input.fill('roulette').catch(() => null);
+        await enterSearchQuery(search.input, 'roulette').catch(() => null);
         await waitForUiSettled(page, 900);
         await closeLiveSearchModal(page);
 
@@ -1049,7 +1099,7 @@ test.describe('Live Casino Coverage: search/filter interactions', () => {
           const search = await openLiveSearch(page);
           stages.push({ name: 'search', completed: true, opened: Boolean(search.opened) });
           if (search.opened && search.inputVisible && search.input) {
-            await search.input.fill('roulette', { timeout: 3000 }).catch(() => null);
+            await enterSearchQuery(search.input, 'roulette').catch(() => null);
             await waitForUiSettled(page, 900);
             await closeLiveSearchModal(page).catch(() => null);
           }
@@ -1087,7 +1137,7 @@ test.describe('Live Casino Coverage: search/filter interactions', () => {
         } catch (error) {
           flowError = String(error && error.message ? error.message : error);
           testInfo.annotations.push({
-            type: 'partial',
+            type: 'diagnostic',
             description: `Live WebSocket diagnostic flow was only partially completed: ${flowError}`,
           });
         } finally {
@@ -1106,7 +1156,7 @@ test.describe('Live Casino Coverage: search/filter interactions', () => {
             Boolean(launchStage && !(launchStage.launch && launchStage.launch.launched));
           if (noSockets || onlySupportChatSockets || incompleteInteraction) {
             testInfo.annotations.push({
-              type: 'partial',
+              type: 'diagnostic',
               description: noSockets
                 ? 'Live casino routes opened, but no WebSocket connections were observed in this observation window.'
                 : onlySupportChatSockets

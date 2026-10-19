@@ -35,3 +35,26 @@ test('igo provider baseline covers the complete current inventory', () => {
   assert.equal(providers.length, 64);
   assert.equal(new Set(providers.map((provider) => provider.toLowerCase())).size, providers.length);
 });
+
+test('gt provider baseline covers the complete current inventory', () => {
+  const providers = getBaselineProviders('https://gt.bet/');
+  const expected = [
+    '3 Oaks Gaming',
+    'Absolute Live Gaming',
+    'Big Time Gaming',
+    'Hacksaw Gaming',
+    'NetEnt',
+    'Nolimit City',
+    'PlayTech',
+    'Pragmatic Play',
+    'Red Tiger',
+    'Relax Gaming',
+    'sneakyslots',
+  ];
+
+  for (const provider of expected) {
+    assert.equal(providers.includes(provider), true, `${provider} should be covered`);
+  }
+  assert.equal(providers.length, 57);
+  assert.equal(new Set(providers.map((provider) => provider.toLowerCase())).size, providers.length);
+});

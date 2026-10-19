@@ -476,6 +476,14 @@ function credentialValue(value) {
     .trim();
 }
 
+function reportPasswordValue(value) {
+  const password = credentialValue(value);
+  if (!password) return '';
+  return process.env.QA_REPORT_INCLUDE_PLAYER_PASSWORD === '1'
+    ? password
+    : 'Скрыт (доступен только в приватном отчёте)';
+}
+
 const NOTE_TEXT_LIMIT = 180;
 const TOP_REASON_TEXT_LIMIT = 140;
 
@@ -1055,7 +1063,10 @@ function getFlagLabels(test) {
   if (String(test.status || '') === 'timedOut' || hasAnnotation(test, 'test-infra-timeout')) {
     flags.push('test infra timeout');
   }
-  if (hasAnnotation(test, 'provider-absent')) flags.push('provider absent');
+  if (hasAnnotation(test, 'provider-absent')) {
+    flags.push('provider absent');
+    if (!hasAnnotation(test, 'not-applicable')) flags.push('n/a');
+  }
   if (hasAnnotation(test, 'provider-blocked')) flags.push('provider blocked');
   else if (hasAnnotation(test, 'blocked')) {
     if (hasAnnotation(test, 'infra-blocked')) flags.push('infra blocked');
@@ -1211,7 +1222,9 @@ function getSignalTotals(tests) {
     ).length,
     productBlocked: tests.filter((test) => hasAnnotation(test, 'product-blocked')).length,
     productWarnings: tests.filter((test) => hasAnnotation(test, 'product-warning')).length,
-    notApplicable: tests.filter((test) => hasAnnotation(test, 'not-applicable')).length,
+    notApplicable: tests.filter(
+      (test) => hasAnnotation(test, 'not-applicable') || hasAnnotation(test, 'provider-absent')
+    ).length,
     partial: tests.filter(
       (test) => hasAnnotation(test, 'partial') || hasAnnotation(test, 'deposit-method-limit')
     ).length,
@@ -1608,7 +1621,9 @@ const orchestrationRetryAttempts = executionAttempts.filter((attempt) => attempt
 const orchestrationFailedAttempts = executionAttempts.filter(
   (attempt) => Number(attempt.code || 0) !== 0
 ).length;
-const orchestrationWafAttempts = executionAttempts.filter((attempt) => attempt.wafSignal).length;
+const orchestrationWafAttempts = executionAttempts.filter(
+  (attempt) => attempt.wafSignal && Number(attempt.code || 0) !== 0
+).length;
 const orchestrationPlaywrightAttempts = executionAttempts.filter(
   (attempt) => !attempt.kind || attempt.kind === 'playwright'
 ).length;
@@ -1752,7 +1767,7 @@ const currentManualLoginEmail = credentialValue(
     (registrationData && registrationData.email) ||
     ''
 );
-const currentManualLoginPassword = credentialValue(
+const currentManualLoginPassword = reportPasswordValue(
   (manualLoginPlayerData && manualLoginPlayerData.password) ||
     (registrationData && registrationData.password) ||
     ''

@@ -207,9 +207,14 @@ function loadPlayerCredentials() {
 
 function visiblePlayerCredentials(credentials) {
   const available = Boolean(credentials && credentials.email && credentials.password);
+  const exposePassword = process.env.QA_REPORT_INCLUDE_PLAYER_PASSWORD === '1';
   return {
     email: available ? playerEmailPlaceholder : 'Не найдена',
-    password: available ? playerPasswordPlaceholder : 'Не найден',
+    password: available
+      ? exposePassword
+        ? playerPasswordPlaceholder
+        : 'Скрыт (используйте QA_REPORT_INCLUDE_PLAYER_PASSWORD=1 только для приватного отчёта)'
+      : 'Не найден',
     source: oneLine(credentials && credentials.source) || 'Учётные данные не найдены',
     validationStatus: oneLine(credentials && credentials.validationStatus) || 'Статус не указан',
     available,
@@ -1934,7 +1939,10 @@ async function main() {
       const safeMetadata = redactObject(metadata);
       safeMetadata.playerCredentials = {
         email: playerCredentials.email || '',
-        password: playerCredentials.password || '',
+        password:
+          process.env.QA_REPORT_INCLUDE_PLAYER_PASSWORD === '1'
+            ? playerCredentials.password || ''
+            : 'Скрыт (доступен только в приватном отчёте)',
         source: playerCredentials.source || '',
         validationStatus: playerCredentials.validationStatus || '',
         available: reportPlayerCredentials.available,

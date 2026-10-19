@@ -3,6 +3,7 @@ const path = require('path');
 const { URL } = require('url');
 const { test, expect } = require('../fixtures/qa-test');
 const {
+  clickLocatorRobust,
   closeModal,
   closeMobileNavigationOverlay,
   detectCloudflare,
@@ -101,6 +102,12 @@ async function firstVisibleLocator(root, selectors) {
     }
   }
   return null;
+}
+
+async function enterSearchQuery(input, query) {
+  await input.click({ timeout: 3000 }).catch(() => null);
+  await input.fill('');
+  await input.pressSequentially(String(query || ''), { delay: 35 });
 }
 
 async function hasChallengeTokenPage(page) {
@@ -353,9 +360,7 @@ async function openSearchModal(page) {
     '.t-games-catalog input[class*="search" i]',
     '[class*="games-catalog" i] input[placeholder*="Search" i]',
     '[class*="games-catalog" i] input[type="search"]',
-    '[data-testid="sidebar-search-input"]',
-    'main input[type="search"]',
-    'input[placeholder*="Search" i][type="text"]',
+    '.t-game-search-modal input:not([type="hidden"])',
   ]);
   if (inlineInput) {
     return {
@@ -388,16 +393,11 @@ async function openSearchModal(page) {
 
   let clicked = false;
   if (searchButton) {
-    clicked = await searchButton
-      .click({ timeout: 7000 })
-      .then(() => true)
-      .catch(() => false);
-    if (!clicked) {
-      clicked = await searchButton
-        .click({ timeout: 3000, force: true })
-        .then(() => true)
-        .catch(() => false);
-    }
+    clicked = await clickLocatorRobust(page, searchButton, {
+      timeout: 7000,
+      waitForNavigation: false,
+      settleTimeout: 500,
+    }).catch(() => false);
     await waitForUiSettled(page, 1500);
   }
 
@@ -433,6 +433,17 @@ async function openSearchModal(page) {
     await waitForUiSettled(page, 1500);
   }
 
+  // The Vue modal is teleported into the app root after the click transition.
+  // `locator.count()` is instantaneous, so wait for the concrete control before
+  // resolving the selector matrix below.
+  await page
+    .locator(
+      '.t-game-search-modal input:not([type="hidden"]), .t-game-search-modal [contenteditable="true"]'
+    )
+    .first()
+    .waitFor({ state: 'visible', timeout: 6000 })
+    .catch(() => null);
+
   const input = await firstVisibleLocator(page, [
     '.t-modal input[placeholder*="Game" i]',
     '[role="dialog"] input[placeholder*="Game" i]',
@@ -445,6 +456,8 @@ async function openSearchModal(page) {
     '.t-modal input[type="text"]',
     '.t-game-search-modal input[type="search"]',
     '.t-game-search-modal input[type="text"]',
+    '.t-game-search-modal input:not([type="hidden"])',
+    '.t-game-search-modal [contenteditable="true"]',
     '.t-games-catalog input[placeholder*="Search" i]',
     '.t-games-catalog input[type="search"]',
     '.t-games-catalog input[class*="search" i]',
@@ -463,6 +476,7 @@ async function openSearchModal(page) {
 
   if (!modal) {
     modal = await firstVisibleLocator(page, [
+      '.t-game-search-modal:visible',
       '.t-modal:visible',
       '[role="dialog"]:visible',
       '[class*="games-search" i]:visible',
@@ -567,9 +581,15 @@ async function openFilterPanel(page) {
 
   let clicked = false;
   if (toggle) {
-    await toggle.click({ timeout: 7000 }).catch(() => null);
-    clicked = true;
-    await waitForUiSettled(page, 1400);
+    clicked = await toggle
+      .click({ timeout: 7000 })
+      .then(() => true)
+      .catch(() =>
+        toggle
+          .click({ timeout: 4000, force: true })
+          .then(() => true)
+          .catch(() => false)
+      );
   }
 
   if (!clicked) {
@@ -600,11 +620,16 @@ async function openFilterPanel(page) {
     if (!domFallbackClicked) {
       return { opened: false, panel: null, reason: 'Filter toggle not found.' };
     }
-    await waitForUiSettled(page, 1400);
+    clicked = true;
   }
 
-  const panel = await firstVisibleLocator(page, panelSelectors);
-  if (panel) return { opened: true, panel, reason: null };
+  if (clicked) {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const panel = await firstVisibleLocator(page, panelSelectors);
+      if (panel) return { opened: true, panel, reason: null };
+      await waitForUiSettled(page, 400);
+    }
+  }
 
   const inlineProviderRows = page.locator(
     '.t-games-filters-block.providers .t-checkbox, .t-games-select__checkbox .t-checkbox'
@@ -619,7 +644,49 @@ async function openFilterPanel(page) {
     };
   }
 
-  return { opened: false, panel: null, reason: 'Filter panel not visible.' };
+  const overlayOpened = await page
+    .locator('.t-games-catalog__quick-access:visible')
+    .first()
+    .isVisible()
+    .catch(() => false);
+  const filterSkeletonVisible = await page
+    .locator('.t-games-filters-skeleton:visible, [class*="games-filters-skeleton" i]:visible')
+    .first()
+    .isVisible()
+    .catch(() => false);
+  const diagnostics = await page
+    .evaluate(() => ({
+      toggles: document.querySelectorAll('.t-games-filters-mobile__toggle').length,
+      quickAccess: document.querySelectorAll('.t-games-catalog__quick-access').length,
+      providerBlocks: document.querySelectorAll('.t-games-filters-block.providers').length,
+      checkboxes: document.querySelectorAll(
+        '.t-games-filters-block.providers .t-checkbox, .t-games-select__checkbox .t-checkbox'
+      ).length,
+      visibleFilterClasses: Array.from(document.querySelectorAll('[class*="games-filter"]'))
+        .filter((element) => {
+          const rect = element.getBoundingClientRect();
+          const style = globalThis.getComputedStyle(element);
+          return (
+            rect.width > 0 &&
+            rect.height > 0 &&
+            style.display !== 'none' &&
+            style.visibility !== 'hidden'
+          );
+        })
+        .map((element) => String(element.className || ''))
+        .slice(0, 20),
+    }))
+    .catch(() => null);
+  return {
+    opened: false,
+    panel: null,
+    reason: filterSkeletonVisible
+      ? 'Filter controls remained in skeleton-loading state.'
+      : overlayOpened
+        ? 'Filter panel opened but its content did not finish loading.'
+        : 'Filter panel not visible.',
+    diagnostics,
+  };
 }
 
 async function activateFilterTab(panel, label) {
@@ -757,13 +824,33 @@ async function selectFirstUncheckedProvider(panel) {
 }
 
 async function filterPanelOk(panel) {
-  const ok = await firstVisibleLocator(panel, [
+  let ok = await firstVisibleLocator(panel, [
     '.t-games-filters-action__close',
+    '.t-games-filters__close',
+    '.t-games-catalog__quick-access [class*="filters__close" i]',
     'button:has-text("OK")',
     'button:has-text("Apply")',
   ]);
+  if (!ok) {
+    ok = await firstVisibleLocator(panel.page(), [
+      '.t-games-catalog__quick-access:visible .t-games-filters-action__close',
+      '.t-games-catalog__quick-access:visible .t-games-filters__close',
+      '.t-games-catalog__quick-access:visible [class*="filters__close" i]',
+      'button:has-text("OK")',
+      'button:has-text("Apply")',
+    ]);
+  }
   if (!ok) return false;
-  await ok.click({ timeout: 5000 }).catch(() => null);
+  const clicked = await ok
+    .click({ timeout: 5000 })
+    .then(() => true)
+    .catch(() =>
+      ok
+        .click({ timeout: 3000, force: true })
+        .then(() => true)
+        .catch(() => false)
+    );
+  if (!clicked) return false;
   await waitForUiSettled(panel.page(), 1500);
   return true;
 }
@@ -1367,8 +1454,8 @@ async function openCasinoSubRoute(page, route) {
   };
 }
 
-async function findFavoriteControl(page) {
-  return firstVisibleLocator(page, [
+async function findFavoriteControl(scope, options = {}) {
+  const selectors = [
     '[data-testid*="favorite" i]',
     '[data-testid*="favourite" i]',
     'button[aria-label*="favorite" i]',
@@ -1379,7 +1466,18 @@ async function findFavoriteControl(page) {
     '[class*="favourite" i][role="button"]',
     '[class*="bookmark" i][role="button"]',
     '[class*="heart" i][role="button"]',
-  ]);
+  ];
+  if (options.cardScope === true) {
+    selectors.push(
+      '.t-game-play__favorite',
+      '.t-game-item__favorite',
+      '[class*="favorite" i]',
+      '[class*="favourite" i]',
+      '[class*="bookmark" i]',
+      '[class*="heart" i]'
+    );
+  }
+  return firstVisibleLocator(scope, selectors);
 }
 
 async function favoriteControlState(locator) {
@@ -1598,10 +1696,16 @@ test.describe('Casino Catalog Coverage: search/filter/load more/game launch', ()
       }
 
       await search.input.click({ timeout: 3000 }).catch(() => null);
-      await search.input.fill(query);
+      await enterSearchQuery(search.input, query);
       const value = (await search.input.inputValue().catch(() => '')).toLowerCase();
       expect(value.includes(query), 'Search input did not accept query text.').toBeTruthy();
       await waitForUiSettled(page, 2400);
+      await (search.modal || page)
+        .locator('.games-wrapper__item .name, [class*="game" i] [class*="name" i]')
+        .filter({ hasText: new RegExp(query, 'i') })
+        .first()
+        .waitFor({ state: 'visible', timeout: 8000 })
+        .catch(() => null);
 
       const titles = await collectSearchResultTitles(search.modal || page);
       const matching = titles.filter((item) => item.toLowerCase().includes(query));
@@ -1658,7 +1762,7 @@ test.describe('Casino Catalog Coverage: search/filter/load more/game launch', ()
       }
 
       await search.input.click({ timeout: 3000 }).catch(() => null);
-      await search.input.fill(query);
+      await enterSearchQuery(search.input, query);
       const value = (await search.input.inputValue().catch(() => '')).toLowerCase();
       expect(
         value.includes(query.toLowerCase()),
@@ -2053,7 +2157,7 @@ test.describe('Casino Catalog Coverage: search/filter/load more/game launch', ()
       }
 
       await search.input.click({ timeout: 3000 }).catch(() => null);
-      await search.input.fill('coin');
+      await enterSearchQuery(search.input, 'coin');
       const value = (await search.input.inputValue().catch(() => '')).toLowerCase();
       expect(
         value.includes('coin'),
@@ -2604,8 +2708,7 @@ test.describe('Casino Catalog Coverage: search/filter/load more/game launch', ()
       await targetCard.hover().catch(() => null);
       await waitForUiSettled(page, 700);
 
-      const favoriteControl =
-        (await findFavoriteControl(targetCard)) || (await findFavoriteControl(page));
+      const favoriteControl = await findFavoriteControl(targetCard, { cardScope: true });
       if (!favoriteControl) {
         const reason = 'Favorite control is not visible on game card in current layout.';
         markBlocked(testInfo, reason);
@@ -2620,7 +2723,24 @@ test.describe('Casino Catalog Coverage: search/filter/load more/game launch', ()
       }
 
       const favoriteStateBefore = await favoriteControlState(favoriteControl);
-      await favoriteControl.click({ timeout: 7000 }).catch(() => null);
+      const favoriteClicked = await clickLocatorRobust(page, favoriteControl, {
+        timeout: 7000,
+        waitForNavigation: false,
+        settleTimeout: 700,
+      }).catch(() => false);
+      if (!favoriteClicked) {
+        const reason = 'Favorite control was visible but did not accept the click.';
+        markBlocked(testInfo, reason);
+        await writeAndAttach(testInfo, testName, {
+          blocked: true,
+          reason,
+          route,
+          authStatePath,
+          action,
+          favoriteStateBefore,
+        });
+        return;
+      }
       await waitForUiSettled(page, 1400);
       const favoriteStateAfter = await favoriteControlState(favoriteControl);
 
@@ -2645,6 +2765,22 @@ test.describe('Casino Catalog Coverage: search/filter/load more/game launch', ()
       const favoritesRoute = favoritesRouteResult.value;
       if (favoritesRoute.challenge) {
         const reason = favoritesRoute.challenge;
+        markBlocked(testInfo, reason);
+        await writeAndAttach(testInfo, testName, {
+          blocked: true,
+          reason,
+          route,
+          authStatePath,
+          action,
+          favoriteStateBefore,
+          favoriteStateAfter,
+          favoritesRoute,
+        });
+        return;
+      }
+
+      if (!/\/favorites\/?(?:[?#]|$)/i.test(String(favoritesRoute.finalUrl || ''))) {
+        const reason = `Favorites route redirected to ${favoritesRoute.finalUrl || 'an unknown URL'} instead of /favorites/.`;
         markBlocked(testInfo, reason);
         await writeAndAttach(testInfo, testName, {
           blocked: true,
@@ -2994,7 +3130,7 @@ test.describe('Casino Catalog Coverage: search/filter/load more/game launch', ()
         if (plan.step === 'search') {
           const search = await openSearchModal(page);
           if (search.opened && search.inputVisible && search.input) {
-            await search.input.fill('coin').catch(() => null);
+            await enterSearchQuery(search.input, 'coin').catch(() => null);
             await waitForUiSettled(page, 1800);
           }
         }

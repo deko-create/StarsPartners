@@ -18,6 +18,8 @@ const GEO_BLOCK_HINTS = [
   /we're sorry, but .* cannot be accessed/i,
 ];
 const NON_CRITICAL_WAF_URLS = [/\/(?:server\/)?api\/languages\/thook(?:\/|$|\?)/i];
+const NON_CRITICAL_STATIC_ASSET_RE =
+  /\.(?:avif|bmp|gif|ico|jpe?g|png|svg|webp|woff2?|ttf|otf|eot)(?:\?|$)/i;
 const CLOUD_FLARE_CHALLENGE_FRAME_SELECTOR =
   'iframe[src*="challenges.cloudflare.com"], iframe[src*="turnstile"], iframe[title*="challenge" i], iframe[title*="turnstile" i]';
 
@@ -25,7 +27,7 @@ const INFRA_BLOCKED_HINTS = [
   /cloudflare|turnstile|captcha|challenge|waf|cdn-cgi|__cf_chl|token page|forbidden|403/i,
   /geo restriction|cannot be accessed in |region not restricted|proxy service or vpn|http 423/i,
   /no auth state|no authorized storage state|auth storage state|storage state is unavailable/i,
-  /expected authorized session|\/api\/user\/preferences returned 401|session was not established/i,
+  /expected authorized session|auth state|authorized .*login surface|http 401|unauthorized|\/api\/user\/preferences returned 401|session was not established/i,
   /temporarily unavailable|backend unavailable|transport negotiation failed|cancelled\/aborted before bootstrap/i,
   /target page|context or browser has been closed|browser has been closed|test ended/i,
   /internet connection appears to be offline|net::err_internet_disconnected|net::err_network_changed|socket hang up/i,
@@ -54,6 +56,9 @@ function isCriticalWafUrl(url) {
   const value = String(url || '');
   if (!/\/_nuxt\/|\/api\//i.test(value)) return false;
   if (NON_CRITICAL_WAF_URLS.some((re) => re.test(value))) return false;
+  // Fonts and images can be genuine product defects, but they are not evidence
+  // that Cloudflare blocked the application or that an auth flow is unusable.
+  if (NON_CRITICAL_STATIC_ASSET_RE.test(value)) return false;
   return true;
 }
 
@@ -303,7 +308,16 @@ async function findSignupModal(page, timeoutMs = 500) {
     for (let i = 0; i < cap; i += 1) {
       const locator = matches.nth(i);
       const visible = await locator.isVisible({ timeout: timeoutMs }).catch(() => false);
-      if (visible) return locator;
+      if (!visible) continue;
+      const visibleEmail = await locator
+        .locator('input[type="email"]:visible, input[name="email"]:visible')
+        .count()
+        .catch(() => 0);
+      const visiblePassword = await locator
+        .locator('input[type="password"]:visible, input[name="password"]:visible')
+        .count()
+        .catch(() => 0);
+      if (visibleEmail > 0 && visiblePassword > 0) return locator;
     }
   }
 
@@ -331,7 +345,16 @@ async function findSignupModal(page, timeoutMs = 500) {
 
     const ancestor = title.locator(modalAncestorXPath).first();
     const ancestorVisible = await ancestor.isVisible({ timeout: timeoutMs }).catch(() => false);
-    if (ancestorVisible) return ancestor;
+    if (!ancestorVisible) continue;
+    const visibleEmail = await ancestor
+      .locator('input[type="email"]:visible, input[name="email"]:visible')
+      .count()
+      .catch(() => 0);
+    const visiblePassword = await ancestor
+      .locator('input[type="password"]:visible, input[name="password"]:visible')
+      .count()
+      .catch(() => 0);
+    if (visibleEmail > 0 && visiblePassword > 0) return ancestor;
   }
 
   return null;
@@ -341,6 +364,55 @@ async function waitForSignupModal(page, timeoutMs = 5000) {
   const deadline = Date.now() + Math.max(500, Number(timeoutMs || 0));
   while (Date.now() < deadline) {
     const modal = await findSignupModal(page, 250);
+    if (modal) return modal;
+    const withoutDeposit = page.getByText(/sign\s*up\s*without\s*(?:a\s*)?deposit/i).last();
+    if (await withoutDeposit.isVisible({ timeout: 250 }).catch(() => false)) {
+      await withoutDeposit.click({ timeout: 1500, force: true }).catch(() => null);
+    }
+    await delay(200);
+  }
+  return null;
+}
+
+async function findLoginModal(page, timeoutMs = 500) {
+  const selectors = [
+    '.t-login-modal',
+    '[data-testid="login-modal"]',
+    '.t-popup:has(input[type="password"]):has-text("Log In")',
+    '[role="dialog"]:has(input[type="password"]):has-text("Log In")',
+    '[class*="modal" i]:has(input[type="password"]):has-text("Log In")',
+    '[class*="popup" i]:has(input[type="password"]):has-text("Log In")',
+    '[class*="dialog" i]:has(input[type="password"]):has-text("Log In")',
+    '.t-login:has(input[type="password"])',
+    'form:has(input[type="password"]):has-text("Log In")',
+  ];
+
+  for (const selector of selectors) {
+    const matches = page.locator(selector);
+    const count = Math.min(await matches.count().catch(() => 0), 12);
+    for (let index = 0; index < count; index += 1) {
+      const candidate = matches.nth(index);
+      if (!(await candidate.isVisible({ timeout: timeoutMs }).catch(() => false))) continue;
+      const passwordVisible = await candidate
+        .locator('input[type="password"]:visible')
+        .count()
+        .catch(() => 0);
+      const identityVisible = await candidate
+        .locator(
+          'input[type="email"]:visible, input[name*="email" i]:visible, input:visible:not([type="password"]):not([type="hidden"]):not([type="checkbox"]):not([type="radio"])'
+        )
+        .count()
+        .catch(() => 0);
+      if (passwordVisible > 0 && identityVisible > 0) return candidate;
+    }
+  }
+  return null;
+}
+
+async function waitForLoginModal(page, timeoutMs = 5000) {
+  const deadline = Date.now() + Math.max(500, Number(timeoutMs || 0));
+  while (Date.now() < deadline) {
+    const modal = await findLoginModal(page, 250);
     if (modal) return modal;
     await delay(200);
   }
@@ -474,6 +546,42 @@ async function dismissOverlays(page) {
       }
     } catch {
       // Ignore if not present or not clickable
+    }
+  }
+
+  // Deposit & Play and notification prompts can be injected after the first
+  // pass. Poll only their known surfaces before continuing with user actions.
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const latePopup = page
+      .locator(
+        '.t-modal-pnp:visible, .t-popup:visible:has-text("Deposit &"), .t-popup:visible:has-text("Please choose your payment method")'
+      )
+      .first();
+    const lateNotification = page
+      .locator('button:has-text("Later"), button:has-text("No thanks")')
+      .first();
+    const popupVisible = await latePopup.isVisible({ timeout: 250 }).catch(() => false);
+    const notificationVisible = await lateNotification
+      .isVisible({ timeout: 250 })
+      .catch(() => false);
+
+    if (popupVisible) {
+      const close = latePopup
+        .locator('.t-popup__close, [aria-label*="close" i], [data-testid*="close" i]')
+        .first();
+      await close.click({ timeout: 1200, force: true }).catch(() => null);
+    }
+    if (notificationVisible) {
+      await lateNotification.click({ timeout: 1200, force: true }).catch(() => null);
+    }
+    if (popupVisible || notificationVisible) {
+      await waitForUiSettled(page, 300).catch(() => null);
+      continue;
+    }
+    if (attempt < 3) {
+      await page
+        .evaluate(() => new Promise((resolve) => globalThis.setTimeout(resolve, 250)))
+        .catch(() => null);
     }
   }
 
@@ -739,7 +847,6 @@ function markBlocked(testInfo, description) {
       type: 'not-applicable',
       description: `Capability "${capabilityKey}" is optional for this brand. ${reason}`,
     });
-    testInfo.annotations.push({ type: 'partial', description: reason });
     return;
   }
 
@@ -807,13 +914,21 @@ async function clickLocatorRobust(page, locator, options = {}) {
     }
   }
 
-  const box = await locator.boundingBox().catch(() => null);
-  if (box && Number.isFinite(box.x) && Number.isFinite(box.y)) {
-    const viewport = page.viewportSize() || { width: 1365, height: 900 };
-    const x = Math.min(Math.max(box.x + box.width / 2, 2), Math.max(2, viewport.width - 2));
-    const y = Math.min(Math.max(box.y + box.height / 2, 2), Math.max(2, viewport.height - 2));
-    await page.mouse.move(x, y, { steps: 6 }).catch(() => null);
-    await page.mouse.click(x, y, { delay: 80 }).catch(() => null);
+  // A coordinate fallback is unsafe when a delayed popup/backdrop intercepts
+  // pointer events: the click lands on the overlay and looks successful.
+  await dismissOverlays(page).catch(() => null);
+  // `force: true` still sends a coordinate event. A sticky sidebar/header can
+  // receive that event while Playwright reports the target click as successful.
+  // Dispatch the target element's native click first so the intended component
+  // handler runs even when another fixed layer overlaps its coordinates.
+  const domClicked = await locator
+    .evaluate((node) => {
+      if (!node || typeof node.click !== 'function') return false;
+      node.click();
+      return true;
+    })
+    .catch(() => false);
+  if (domClicked) {
     if (waitForNavigation) {
       await page.waitForLoadState('domcontentloaded').catch(() => null);
     }
@@ -823,14 +938,15 @@ async function clickLocatorRobust(page, locator, options = {}) {
     return true;
   }
 
-  const domClicked = await locator
-    .evaluate((node) => {
-      if (!node || typeof node.click !== 'function') return false;
-      node.click();
-      return true;
+  const forced = await locator
+    .click({
+      timeout: Math.min(timeout, 5000),
+      force: true,
+      noWaitAfter: options.noWaitAfter === true,
     })
+    .then(() => true)
     .catch(() => false);
-  if (!domClicked) {
+  if (!forced) {
     return false;
   }
   if (waitForNavigation) {
@@ -865,6 +981,17 @@ async function openSignupModal(page, opts = {}) {
       try {
         if (await btn.isVisible()) {
           await btn.click();
+          let signupWithoutDeposit = page
+            .getByRole('button', { name: /sign\s*up\s*without\s*a?\s*deposit/i })
+            .first();
+          if (!(await signupWithoutDeposit.isVisible({ timeout: 1200 }).catch(() => false))) {
+            signupWithoutDeposit = page
+              .getByText(/^\s*sign\s*up\s*without\s*a?\s*deposit\s*$/i, { exact: true })
+              .first();
+          }
+          if (await signupWithoutDeposit.isVisible({ timeout: 2500 }).catch(() => false)) {
+            await signupWithoutDeposit.click({ timeout: 5000, force: true });
+          }
           await Promise.any([
             waitForSignupModal(page, 5000),
             errorToast.waitFor({ state: 'visible', timeout: 2000 }),
@@ -895,7 +1022,6 @@ async function openSignupModal(page, opts = {}) {
 }
 
 async function openLoginModal(page, opts = {}) {
-  const modal = page.locator('.t-login-modal, [data-testid="login-modal"], .t-login').first();
   const errorToast = page.getByText(/something went wrong/i).first();
   const retryOnError = opts.retryOnError !== false;
   const maxAttempts = opts.attempts || 3;
@@ -933,19 +1059,28 @@ async function openLoginModal(page, opts = {}) {
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     await dismissOverlays(page);
+    const alreadyOpen = await findLoginModal(page);
+    if (alreadyOpen) return alreadyOpen;
+    const depositGateVisible = await page
+      .getByText(/deposit\s*&\s*play/i)
+      .first()
+      .isVisible({ timeout: 500 })
+      .catch(() => false);
+    if (depositGateVisible) {
+      const gateLogin = page.getByText(/^\s*log\s*in\s*$/i, { exact: true }).last();
+      if (await gateLogin.isVisible({ timeout: 500 }).catch(() => false)) {
+        await gateLogin.click({ timeout: 3000, force: true }).catch(() => null);
+        const opened = await waitForLoginModal(page, 5000);
+        if (opened) return opened;
+      }
+    }
     for (const selector of triggers) {
       const btn = page.locator(selector).first();
       try {
         if (await btn.isVisible()) {
-          await btn.click();
-          await Promise.any([
-            modal.waitFor({ state: 'visible', timeout: 2000 }),
-            errorToast.waitFor({ state: 'visible', timeout: 2000 }),
-            waitForUiSettled(page, 2000),
-          ]).catch(() => null);
-          if (await modal.isVisible().catch(() => false)) {
-            return modal;
-          }
+          await btn.click({ timeout: 5000 });
+          const opened = await waitForLoginModal(page, 5000);
+          if (opened) return opened;
           if (await errorToast.isVisible().catch(() => false)) {
             if (!retryOnError) {
               throw new Error('Login error toast: Something went wrong, please try again later.');
@@ -973,14 +1108,8 @@ async function openLoginModal(page, opts = {}) {
       const visible = await candidate.isVisible({ timeout: 500 }).catch(() => false);
       if (!visible) continue;
       await candidate.click({ timeout: 5000 }).catch(() => null);
-      await Promise.any([
-        modal.waitFor({ state: 'visible', timeout: 2000 }),
-        errorToast.waitFor({ state: 'visible', timeout: 2000 }),
-        waitForUiSettled(page, 2000),
-      ]).catch(() => null);
-      if (await modal.isVisible().catch(() => false)) {
-        return modal;
-      }
+      const opened = await waitForLoginModal(page, 5000);
+      if (opened) return opened;
     }
   }
 

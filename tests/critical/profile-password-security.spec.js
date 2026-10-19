@@ -5,6 +5,7 @@ const { test, expect } = require('../fixtures/qa-test');
 const {
   detectCloudflare,
   dismissOverlays,
+  clickLocatorRobust,
   markBlocked,
   waitForUiSettled,
 } = require('../helpers/gt-utils');
@@ -235,7 +236,27 @@ async function runPasswordChangeUi(page, oldPassword, newPassword) {
 
   page.on('response', onResponse);
 
-  const inputs = await resolvePasswordInputs(page);
+  let inputs = await resolvePasswordInputs(page);
+  if (!inputs.current || !inputs.next) {
+    const changeButton = await firstVisibleLocator(page, [
+      'button:has-text("Change")',
+      'button:has-text("Change password")',
+      '[data-testid*="password" i] button',
+    ]);
+    if (changeButton) {
+      await clickLocatorRobust(page, changeButton, {
+        timeout: 8000,
+        waitForNavigation: false,
+        settleTimeout: 800,
+      }).catch(() => false);
+      await page
+        .locator('input[type="password"]:visible')
+        .first()
+        .waitFor({ state: 'visible', timeout: 5000 })
+        .catch(() => null);
+      inputs = await resolvePasswordInputs(page);
+    }
+  }
   if (!inputs.current || !inputs.next) {
     page.off('response', onResponse);
     return {

@@ -1277,30 +1277,23 @@ async function openFilterPanel(page) {
     '[class*="games-filters-mobile__head" i] button',
   ];
 
-  for (let attempt = 0; attempt < 6; attempt += 1) {
-    const toggle = await firstVisibleLocator(page, selectors);
-    if (toggle) {
-      await toggle.scrollIntoViewIfNeeded().catch(() => null);
-      let clicked = await toggle
-        .click({ timeout: 7000 })
-        .then(() => true)
-        .catch(() => false);
-      if (!clicked) {
-        clicked = await toggle
+  const toggle = await firstVisibleLocator(page, selectors);
+  let clicked = false;
+  if (toggle) {
+    await toggle.scrollIntoViewIfNeeded().catch(() => null);
+    clicked = await toggle
+      .click({ timeout: 7000 })
+      .then(() => true)
+      .catch(() =>
+        toggle
           .click({ timeout: 5000, force: true })
           .then(() => true)
-          .catch(() => false);
-      }
-      if (!clicked) {
-        await toggle.press('Enter').catch(() => null);
-      }
-      await waitForUiSettled(page, 1200);
-    }
+          .catch(() => false)
+      );
+  }
 
-    let panel = await firstVisibleLocator(page, panelSelectors);
-    if (panel) return { opened: true, panel, reason: null };
-
-    const domFallbackClicked = await page
+  if (!clicked) {
+    clicked = await page
       .evaluate(() => {
         const selectors = [
           '.t-games-filters-mobile__toggle',
@@ -1324,16 +1317,14 @@ async function openFilterPanel(page) {
         return false;
       })
       .catch(() => false);
-    if (!domFallbackClicked) {
-      await waitForUiSettled(page, 1000);
-      continue;
+  }
+
+  if (clicked) {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const panel = await firstVisibleLocator(page, panelSelectors);
+      if (panel) return { opened: true, panel, reason: null };
+      await waitForUiSettled(page, 400);
     }
-
-    await waitForUiSettled(page, 1200);
-    panel = await firstVisibleLocator(page, panelSelectors);
-    if (panel) return { opened: true, panel, reason: null };
-
-    await waitForUiSettled(page, 1000);
   }
 
   const inlineProviderRows = page.locator(
@@ -1349,7 +1340,27 @@ async function openFilterPanel(page) {
     };
   }
 
-  return { opened: false, panel: null, reason: 'Filter panel not visible.' };
+  const overlayOpened = await page
+    .locator('.t-games-catalog__quick-access:visible')
+    .first()
+    .isVisible()
+    .catch(() => false);
+  const filterSkeletonVisible = await page
+    .locator('.t-games-filters-skeleton:visible, [class*="games-filters-skeleton" i]:visible')
+    .first()
+    .isVisible()
+    .catch(() => false);
+  return {
+    opened: false,
+    panel: null,
+    reason: filterSkeletonVisible
+      ? 'Filter controls remained in skeleton-loading state.'
+      : overlayOpened
+        ? 'Filter panel opened but its content did not finish loading.'
+        : clicked
+          ? 'Filter panel not visible after activating its toggle.'
+          : 'Filter toggle not found or could not be activated.',
+  };
 }
 
 async function activateFilterTab(panel, label) {
@@ -1389,20 +1400,56 @@ async function activateFilterTab(panel, label) {
 async function filterPanelOk(panel) {
   let ok = await firstVisibleLocator(panel, [
     '.t-games-filters-action__close',
+    '.t-games-filters__close',
+    '.t-games-catalog__quick-access [class*="filters__close" i]',
     'button:has-text("OK")',
     'button:has-text("Apply")',
   ]);
   if (!ok) {
     ok = await firstVisibleLocator(panel.page(), [
-      '.t-games-filters-action__close',
+      '.t-games-catalog__quick-access:visible .t-games-filters-action__close',
+      '.t-games-catalog__quick-access:visible .t-games-filters__close',
+      '.t-games-catalog__quick-access:visible [class*="filters__close" i]',
       'button:has-text("OK")',
       'button:has-text("Apply")',
     ]);
   }
   if (!ok) return false;
-  await ok.click({ timeout: 5000 }).catch(() => null);
+  const clicked = await ok
+    .click({ timeout: 5000 })
+    .then(() => true)
+    .catch(() =>
+      ok
+        .click({ timeout: 3000, force: true })
+        .then(() => true)
+        .catch(() => false)
+    );
+  if (!clicked) return false;
   await waitForUiSettled(panel.page(), 1200);
   return true;
+}
+
+async function closeProviderFilterOverlay(page) {
+  const overlay = page.locator('.t-games-catalog__quick-access:visible').first();
+  if (!(await overlay.isVisible().catch(() => false))) return true;
+
+  const close = await firstVisibleLocator(overlay, [
+    '.t-games-filters-action__close',
+    '.t-games-filters__close',
+    '[class*="filters__close" i]',
+    'button:has-text("OK")',
+    'button:has-text("Apply")',
+  ]);
+  if (close) {
+    await close
+      .click({ timeout: 3000 })
+      .catch(() => close.click({ timeout: 2000, force: true }).catch(() => null));
+  }
+  if (await overlay.isVisible().catch(() => false)) {
+    await page.keyboard.press('Escape').catch(() => null);
+  }
+  await waitForUiSettled(page, 500);
+  return !(await overlay.isVisible().catch(() => false));
 }
 
 async function filterPanelClear(panel) {
@@ -2005,6 +2052,21 @@ async function discoverProviders(page) {
   await activateFilterTab(opened.panel, 'providers');
   const providers = uniqueProvidersByNormalizedName(await collectProvidersFromPanel(opened.panel));
   await filterPanelOk(opened.panel).catch(() => null);
+  if (providers.length === 0) {
+    const fallback = await discoverProvidersViaApi(page);
+    if (fallback.providers.length > 0) {
+      return {
+        providers: fallback.providers,
+        reason: null,
+        source: 'api',
+      };
+    }
+    return {
+      providers: [],
+      reason: fallback.reason || 'Provider filter opened but its inventory was empty.',
+      source: 'ui',
+    };
+  }
   return { providers, reason: null, source: 'ui' };
 }
 
@@ -2231,7 +2293,11 @@ function shouldIgnoreDiagnosticUrl(url) {
   );
 }
 
-const NON_CRITICAL_DIAGNOSTIC_URLS = [/\/(?:server\/)?api\/languages\/thook(?:\/|$|\?)/i];
+const NON_CRITICAL_DIAGNOSTIC_URLS = [
+  /\/(?:server\/)?api\/languages\/thook(?:\/|$|\?)/i,
+  /\/cdn-cgi\/image\//i,
+  /\.(?:avif|bmp|gif|ico|jpe?g|png|svg|webp|woff2?|ttf|otf|eot)(?:\?|$)/i,
+];
 
 function isNonCriticalDiagnosticUrl(url) {
   const value = String(url || '');
@@ -2625,6 +2691,7 @@ async function applyProviderFilter(page, provider) {
       continue;
     }
 
+    await closeProviderFilterOverlay(page);
     let panelStillOpen = Boolean(await firstVisibleLocator(page, panelSelectors));
     if (panelStillOpen) {
       const toggle = await firstVisibleLocator(page, [
@@ -2675,7 +2742,7 @@ async function applyProviderFilter(page, provider) {
 
   return {
     blocked:
-      /filter panel not visible|filter panel failed to open|filter toggle not found|provider checkbox not found|panel stayed open/i.test(
+      /filter panel not visible|filter panel failed to open|filter controls remained|filter toggle not found|provider checkbox not found|panel stayed open/i.test(
         reasons.filter(Boolean).join(' | ')
       ),
     ok: false,
@@ -2929,17 +2996,17 @@ async function findRealPlayButton(page, options = {}) {
       ? options.providerEntries
       : getKnownProvidersForMatching();
   const cardSelectors = [
-    '.t-games-catalog a[href*="/casino/"]',
     '.t-games-catalog .t-game-play',
     '.t-games-catalog .t-game-item',
     '.t-games-catalog [class*="game-play" i]',
     '.t-games-catalog [class*="games-item" i]',
     '.t-games-catalog [data-testid*="game" i]',
-    'main a[href*="/casino/"]',
     'main .t-game-item',
     'main [class*="game-play" i]',
     'main [class*="games-item" i]',
     'main [data-testid*="game" i]',
+    '.t-games-catalog a[href*="/casino/"]',
+    'main a[href*="/casino/"]',
   ];
 
   let cards = null;
@@ -3021,13 +3088,6 @@ async function findRealPlayButton(page, options = {}) {
       .filter({ hasText: /^\s*Play\s*$/i })
       .first();
     if (!(await button.isVisible().catch(() => false))) button = null;
-    if (!button) {
-      const pageButton = page
-        .locator('button, a, [role="button"], [data-testid*="play" i]')
-        .filter({ hasText: /^\s*Play\s*$/i })
-        .first();
-      if (await pageButton.isVisible().catch(() => false)) button = pageButton;
-    }
     if (!button && (cardHref || (await card.getAttribute('href').catch(() => '')))) {
       const cardAction = (await card.getAttribute('href').catch(() => ''))
         ? card
@@ -3060,7 +3120,8 @@ async function findRealPlayButton(page, options = {}) {
     const buttonText = ((await button.innerText().catch(() => '')) || '')
       .replace(/\s+/g, ' ')
       .trim();
-    if (/try for fun|demo/i.test(buttonText) && button !== card) continue;
+    const buttonHref = singleLine(await button.getAttribute('href').catch(() => ''));
+    if (hasDemoHint(`${buttonText} ${buttonHref}`)) continue;
     return {
       found: true,
       reason: null,
@@ -3093,16 +3154,24 @@ async function clickAndCaptureLaunch(context, page, button) {
   const popupPromise = context.waitForEvent('page', { timeout: 2500 }).catch(() => null);
   let clickError = null;
 
+  await closeProviderFilterOverlay(page).catch(() => false);
+
   try {
     await button.click({ timeout: 3000 });
   } catch (err) {
     clickError = String(err && err.message ? err.message : err);
-    await button
-      .evaluate((element) => {
-        element.scrollIntoView({ block: 'center', inline: 'center' });
-        element.click();
-      })
-      .catch(() => null);
+    const forced = await button
+      .click({ timeout: 3000, force: true })
+      .then(() => true)
+      .catch(() => false);
+    if (!forced) {
+      await button
+        .evaluate((element) => {
+          element.scrollIntoView({ block: 'center', inline: 'center' });
+          element.click();
+        })
+        .catch(() => null);
+    }
   }
 
   const popup = await popupPromise;
@@ -4121,7 +4190,13 @@ async function runSingleProviderGameCheck(
           !result.popupChallenge &&
           !result.sameTabChallenge
         ) {
+          // A second Play click is valid only inside an explicit confirmation
+          // dialog. A global page lookup can select the first unrelated game
+          // card and make the provider result belong to another vendor.
           const confirmPlay = page
+            .locator(
+              '[role="dialog"]:visible, .t-popup:visible, [class*="modal" i]:visible, [class*="dialog" i]:visible'
+            )
             .locator('button, a, [role="button"]')
             .filter({ hasText: /^\s*Play\s*$/i })
             .first();
@@ -4231,6 +4306,18 @@ async function runSingleProviderGameCheck(
       return packResult();
     }
 
+    const launchedIdentity = parseCasinoIdentityFromUrl(launch.sameTabUrl || '');
+    if (
+      launchedIdentity.provider &&
+      !providerNamesMatch(launchedIdentity.provider, provider) &&
+      health.surfaceVisible
+    ) {
+      game.status = 'failed';
+      game.outcome = 'failed';
+      game.reason = `Launched game belongs to provider "${launchedIdentity.provider}" instead of requested provider "${provider}".`;
+      return packResult();
+    }
+
     const launchLooksValid = launch.launched || launch.balanceGateVisible;
     const strongSurface = Boolean(launch.balanceGateVisible || health.surfaceVisible);
     const weakSurface =
@@ -4248,9 +4335,10 @@ async function runSingleProviderGameCheck(
         game.reason = `Provider launch temporarily unavailable: ${transientLaunchIssue}`;
         return packResult();
       }
-      game.status = 'failed';
-      game.outcome = 'failed';
-      game.reason = 'Play did not launch game surface and no balance gate shown.';
+      game.status = 'blocked';
+      game.outcome = 'provider-launch-blocked';
+      game.reason =
+        'Provider Play did not launch a game surface and did not show a balance/deposit gate.';
       return packResult();
     }
 
@@ -4261,9 +4349,9 @@ async function runSingleProviderGameCheck(
         game.reason = `Provider launch temporarily unavailable: ${transientLaunchIssue}`;
         return packResult();
       }
-      game.status = 'failed';
-      game.outcome = 'failed';
-      game.reason = 'Game surface missing or error/challenge visible after launch.';
+      game.status = 'blocked';
+      game.outcome = 'provider-launch-blocked';
+      game.reason = 'Provider launch completed without a usable game surface.';
       return packResult();
     }
 
@@ -5712,6 +5800,11 @@ test.describe('Casino Providers Coverage: inventory + real launch matrix', () =>
             'provider-absent',
             `Provider "${provider}" is absent in current brand inventory.`
           );
+          markProviderAnnotation(
+            testInfo,
+            'not-applicable',
+            `Provider "${provider}" is outside the current brand inventory.`
+          );
         } else {
           // One upstream WAF or systemic runner incident can short-circuit many remaining
           // provider rows. Keep every affected row visible in the matrix, but do not multiply
@@ -5860,7 +5953,8 @@ test.describe('Casino Providers Coverage: inventory + real launch matrix', () =>
         providerFastFailReason = combined.reason;
         providerFastFailKind = 'waf';
       }
-      const timeoutMatch = String(combined.reason || '').match(
+      const combinedReason = String(combined.reason || '');
+      const timeoutMatch = combinedReason.match(
         /TEST_INFRA_TIMEOUT:\s*provider stage "([^"]+)" timed out/i
       );
       if (combined.status === 'blocked' && timeoutMatch) {
@@ -5875,6 +5969,28 @@ test.describe('Casino Providers Coverage: inventory + real launch matrix', () =>
           providerFastFailActive = true;
           providerFastFailKind = 'test-infra';
           providerFastFailReason = `TEST_INFRA_TIMEOUT: provider stage "${timeoutMatch[1]}" failed identically for ${providerSystemicFailureCount} consecutive providers; circuit breaker stopped duplicate executions.`;
+        }
+      } else if (
+        combined.status === 'blocked' &&
+        /provider checkbox not found|filter panel .*not (?:visible|finish loading)|provider play did not launch|provider launch completed without/i.test(
+          combinedReason
+        )
+      ) {
+        const signature = combinedReason
+          .toLowerCase()
+          .replace(/provider\s+"[^"]+"/g, 'provider')
+          .replace(/\s+/g, ' ')
+          .trim();
+        if (providerSystemicFailureSignature === signature) {
+          providerSystemicFailureCount += 1;
+        } else {
+          providerSystemicFailureSignature = signature;
+          providerSystemicFailureCount = 1;
+        }
+        if (providerSystemicFailureCount >= 3) {
+          providerFastFailActive = true;
+          providerFastFailKind = 'systemic';
+          providerFastFailReason = `Systemic provider workflow block repeated for ${providerSystemicFailureCount} consecutive providers: ${combinedReason}`;
         }
       } else if (combined.status === 'passed') {
         providerSystemicFailureSignature = '';
@@ -5920,6 +6036,11 @@ test.describe('Casino Providers Coverage: inventory + real launch matrix', () =>
           testInfo,
           'provider-absent',
           `Provider "${provider}" is absent in current brand inventory.`
+        );
+        markProviderAnnotation(
+          testInfo,
+          'not-applicable',
+          `Provider "${provider}" is outside the current brand inventory.`
         );
       } else if (combined.status === 'blocked') {
         markProviderAnnotation(

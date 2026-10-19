@@ -109,6 +109,10 @@ function markdownBody({ runPayload, mode, bugEntry, bugMetadata, runPath }) {
     bugMetadata && bugMetadata.manualReproduction ? bugMetadata.manualReproduction : {};
   const triage = bugMetadata && bugMetadata.triage ? bugMetadata.triage : {};
   const player = bugMetadata && bugMetadata.playerCredentials ? bugMetadata.playerCredentials : {};
+  const playerPassword =
+    process.env.QA_REPORT_INCLUDE_PLAYER_PASSWORD === '1'
+      ? oneLine(player.password || 'Не найден')
+      : 'Скрыт (доступен только в приватном отчёте)';
   const preconditions = Array.isArray(manual.preconditions) ? manual.preconditions : [];
   const steps = Array.isArray(manual.steps) ? manual.steps : [];
   const expected = oneLine(manual.expectedResult || '');
@@ -163,7 +167,7 @@ function markdownBody({ runPayload, mode, bugEntry, bugMetadata, runPath }) {
     '',
     '## Данные тестового игрока',
     `- Почта: ${oneLine(player.email || 'Не найдена')}`,
-    `- Пароль: ${oneLine(player.password || 'Не найден')}`,
+    `- Пароль: ${playerPassword}`,
     `- Источник: ${oneLine(player.source || 'Не указан')}`,
     `- Статус проверки входа: ${oneLine(player.validationStatus || 'Не указан')}`,
     '',

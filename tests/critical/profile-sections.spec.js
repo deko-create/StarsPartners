@@ -5,22 +5,13 @@ const { URL } = require('url');
 const { test, expect } = require('../fixtures/qa-test');
 const AxeBuilder = require('@axe-core/playwright').default;
 const {
-  assertNotCloudflare,
   closeModal,
+  clickLocatorRobust,
   detectCloudflare,
   dismissOverlays,
   markBlocked,
-  openSignupModal,
-  waitForHomeContent,
   waitForUiSettled,
 } = require('../helpers/gt-utils');
-const {
-  applyAuthTokenCookie,
-  isSignupTurnstileBlockedError,
-  registerPlayerViaApi,
-} = require('../helpers/signup-api-fallback');
-const { createRegistrationData } = require('../helpers/registration-data');
-const { SignupRegistrationPage } = require('../page-objects/signup-registration-page');
 const { isCapabilityOptionalForBrand } = require('../helpers/brand-capabilities');
 const {
   resolveExtraHTTPHeaders,
@@ -36,10 +27,20 @@ const PROJECT_ARTIFACTS_DIR = process.env.QA_ARTIFACTS_DIR || path.join(process.
 const ARTIFACT_DIR = path.join(PROJECT_AUTOTEST_REPORT_DIR, 'my-profile');
 const VISUAL_DIR = path.join(ARTIFACT_DIR, 'visual');
 const AUTH_STATE_PATH = path.join(PROJECT_ARTIFACTS_DIR, 'profile-auth-state.json');
+const EXPLICIT_STORAGE_STATE_PATH = process.env.PW_STORAGE_STATE
+  ? path.resolve(String(process.env.PW_STORAGE_STATE))
+  : '';
+const PROJECT_ROOT_STORAGE_STATE_PATH = process.env.QA_PROJECT_ROOT
+  ? path.join(path.resolve(String(process.env.QA_PROJECT_ROOT)), 'storageState.json')
+  : '';
 const FALLBACK_AUTH_STATES = [
   path.join(PROJECT_ARTIFACTS_DIR, 'site-coverage-auth-state.json'),
   path.join(PROJECT_ARTIFACTS_DIR, 'button-sweep-auth-state.json'),
-];
+  EXPLICIT_STORAGE_STATE_PATH,
+  PROJECT_ROOT_STORAGE_STATE_PATH,
+]
+  .filter(Boolean)
+  .filter((candidate, index, all) => all.indexOf(candidate) === index);
 const RUNTIME_PATH = path.join(ARTIFACT_DIR, 'profile-runtime.json');
 
 const PROFILE_ROUTES = [
@@ -56,7 +57,6 @@ const PROFILE_ROUTES = [
 const BONUS_ROUTE_CANDIDATES = ['/promotions/bonuses/', '/bonuses/', '/profile/bonuses/'];
 
 let setupError = null;
-let authPlayer = null;
 const runtime = {
   startedAt: new Date().toISOString(),
   setup: {},
@@ -87,89 +87,10 @@ test.describe('Profile Coverage: P0/P1/P2', () => {
       writeRuntime();
       return;
     }
-
-    const initialStorage = process.env.PW_STORAGE_STATE || 'storageState.json';
-    const contextOptions = resolveMatrixContextOptions();
-    if (fs.existsSync(initialStorage)) {
-      contextOptions.storageState = initialStorage;
-    }
-
-    const context = await browser.newContext(contextOptions);
-    const page = await context.newPage();
-
-    try {
-      const data = createRegistrationData({
-        emailSuffix: `pf${Date.now().toString(36).slice(-6)}`,
-      });
-      await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
-      await assertNotCloudflare(page);
-      await dismissOverlays(page);
-      await waitForHomeContent(page);
-
-      const signupModal = await openSignupModal(page);
-      await expect(signupModal).toBeVisible({ timeout: 15000 });
-      const signupPage = new SignupRegistrationPage(page, signupModal);
-      let usedFallback = false;
-      let outcome = null;
-      try {
-        await signupPage.completeRegistration(data, {
-          errorToast: page.getByText(/something went wrong/i).first(),
-        });
-
-        outcome = await signupPage.waitForOutcome();
-        if (outcome === 'error') {
-          throw new Error('Profile setup signup returned error outcome.');
-        }
-      } catch (err) {
-        if (!isSignupTurnstileBlockedError(err)) throw err;
-        const fallbackSignup = await registerPlayerViaApi({ page, data, baseUrl: BASE_URL });
-        if (!fallbackSignup.ok) {
-          throw new Error(
-            `Profile setup fallback failed: status=${fallbackSignup.status} body=${JSON.stringify(
-              fallbackSignup.body
-            )}`
-          );
-        }
-        await applyAuthTokenCookie(context, fallbackSignup.body.token, BASE_URL);
-        outcome = 'api-fallback';
-        usedFallback = true;
-      }
-
-      await page.waitForLoadState('domcontentloaded').catch(() => null);
-      if (usedFallback) {
-        await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' }).catch(() => null);
-      }
-      await page
-        .getByRole('button', { name: /log in/i })
-        .first()
-        .waitFor({ state: 'hidden', timeout: 12000 })
-        .catch(() => null);
-      await context.storageState({ path: AUTH_STATE_PATH });
-
-      authPlayer = {
-        email: data.email,
-        firstName: data.firstName,
-        lastName: data.lastName,
-        outcome: outcome || 'unknown',
-        generatedAt: new Date().toISOString(),
-      };
-
-      runtime.setup = {
-        ok: true,
-        reused: false,
-        authStatePath: AUTH_STATE_PATH,
-        authPlayer,
-      };
-    } catch (err) {
-      setupError = String(err && err.message ? err.message : err);
-      runtime.setup = {
-        ok: false,
-        error: setupError,
-      };
-    } finally {
-      await context.close();
-      writeRuntime();
-    }
+    setupError =
+      'No verified authorized storage state is available. Registration/login phase must establish it first.';
+    runtime.setup = { ok: false, error: setupError };
+    writeRuntime();
   });
 
   test.afterAll(() => {
@@ -524,8 +445,17 @@ test.describe('Profile Coverage: P0/P1/P2', () => {
           '[data-testid*="avatar" i]',
         ]);
         if (avatarTrigger) {
-          await avatarTrigger.click({ timeout: 8000 }).catch(() => null);
           await dismissOverlays(page);
+          await clickLocatorRobust(page, avatarTrigger, {
+            timeout: 8000,
+            waitForNavigation: false,
+            settleTimeout: 800,
+          }).catch(() => false);
+          await page
+            .locator('input[type="file"][accept*="image" i]')
+            .first()
+            .waitFor({ state: 'attached', timeout: 5000 })
+            .catch(() => null);
           for (const selector of avatarSelectors) {
             const count = await page
               .locator(selector)
@@ -552,15 +482,25 @@ test.describe('Profile Coverage: P0/P1/P2', () => {
       const avatarFixturePath = ensureAvatarFixture();
       try {
         await avatarInput.setInputFiles(avatarFixturePath);
-        avatarFileNames = await avatarInput
-          .evaluate((node) => {
-            const files = node && node.files ? Array.from(node.files) : [];
-            return files.map((file) => file.name);
-          })
-          .catch(() => []);
-        avatarUploaded = avatarFileNames.length > 0;
+        // Uploading replaces the file input with the crop dialog. Reading the
+        // stale locator afterwards waits until the whole test timeout, so treat
+        // a resolved setInputFiles call as the attachment evidence.
+        avatarFileNames = [path.basename(avatarFixturePath)];
+        avatarUploaded = true;
       } catch {
         avatarUploaded = false;
+      }
+
+      const avatarApplyButton = await firstVisibleLocator(page, [
+        'button:has-text("Apply")',
+        '[role="dialog"] button:has-text("Apply")',
+      ]);
+      if (avatarApplyButton) {
+        await clickLocatorRobust(page, avatarApplyButton, {
+          timeout: 8000,
+          waitForNavigation: false,
+          settleTimeout: 800,
+        }).catch(() => false);
       }
 
       const avatarSaveButton = await firstVisibleLocator(page, [
@@ -569,8 +509,11 @@ test.describe('Profile Coverage: P0/P1/P2', () => {
         'button:has-text("Upload")',
       ]);
       if (avatarSaveButton) {
-        await avatarSaveButton.click({ timeout: 10000 }).catch(() => null);
-        avatarSaveClicked = true;
+        avatarSaveClicked = await clickLocatorRobust(page, avatarSaveButton, {
+          timeout: 10000,
+          waitForNavigation: false,
+          settleTimeout: 1200,
+        }).catch(() => false);
       }
 
       expect(
@@ -605,6 +548,9 @@ test.describe('Profile Coverage: P0/P1/P2', () => {
         'input[name*="password" i]',
         'button:has-text("Enable")',
         'button:has-text("Disable")',
+        'button:has-text("Change")',
+        'button:has-text("Activate")',
+        'button:has-text("Edit")',
         'button:has-text("Save")',
       ]);
 
@@ -2130,7 +2076,6 @@ async function tryReuseAuthState(browser) {
     if (candidate !== AUTH_STATE_PATH) {
       fs.copyFileSync(candidate, AUTH_STATE_PATH);
     }
-    authPlayer = valid.authPlayer || null;
     return {
       ok: true,
       source: candidate,

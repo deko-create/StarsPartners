@@ -100,6 +100,7 @@ jobs:
           PW_PROVIDER_MODE_TIMEOUT: '45000'
           PW_SAVE_STATE_TIMEOUT: '90'
           PW_FORCE_SAVE_STATE_BEFORE_RUN: '0'
+          QA_REPORT_INCLUDE_PLAYER_PASSWORD: '0'
         run: npm run qa:all:${{ matrix.brand.key }}:${{ matrix.mode }}
 
       - name: Upload QA artifacts (${{ matrix.brand.key }} | ${{ matrix.mode }})
@@ -111,3 +112,7 @@ jobs:
           path: |
             projects/${{ matrix.brand.slug }}/${{ matrix.mode }}/
             projects/${{ matrix.brand.slug }}/Autotest report/${{ matrix.mode }}/
+            !projects/${{ matrix.brand.slug }}/**/*auth-state*.json
+            !projects/${{ matrix.brand.slug }}/**/storageState*.json
+            !projects/${{ matrix.brand.slug }}/**/*player*.json
+            !projects/${{ matrix.brand.slug }}/**/registration-data*.json

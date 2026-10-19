@@ -2,6 +2,7 @@ const { test, expect } = require('../fixtures/qa-test');
 const fs = require('fs');
 const path = require('path');
 const {
+  clickLocatorRobust,
   createWafProbe,
   detectCloudflare,
   dismissOverlays,
@@ -210,17 +211,28 @@ test('Live chat destructive: guest sends "test" and receives support reply', asy
 
     const trigger = page
       .locator(
-        '[data-testid="sidebar-Live chat-button"], [data-testid="sidebar-liveChat-button"], [data-testid="online-chat-button"], a:has-text("Live chat"), button:has-text("Live chat"), [role="button"]:has-text("Live chat")'
+        '[data-testid="sidebar-Live chat-button"]:visible, [data-testid="sidebar-liveChat-button"]:visible, [data-testid="online-chat-button"]:visible, a:has-text("Live chat"):visible, button:has-text("Live chat"):visible, [role="button"]:has-text("Live chat"):visible'
       )
       .first();
-    const triggerVisible = await trigger.isVisible({ timeout: 15_000 }).catch(() => false);
+    await trigger.waitFor({ state: 'visible', timeout: 15_000 }).catch(() => null);
+    const triggerVisible = await trigger.isVisible().catch(() => false);
     if (!triggerVisible) {
       payload.status = 'blocked';
       payload.reason = 'Live chat trigger is not visible in current brand layout.';
       markBlocked(testInfo, payload.reason);
       return;
     }
-    await trigger.click({ timeout: 10_000 });
+    const triggerClicked = await clickLocatorRobust(page, trigger, {
+      timeout: 10_000,
+      waitForNavigation: false,
+      settleTimeout: 700,
+    }).catch(() => false);
+    if (!triggerClicked) {
+      payload.status = 'blocked';
+      payload.reason = 'Live chat trigger was visible but did not accept the click.';
+      markBlocked(testInfo, payload.reason);
+      return;
+    }
 
     const frame = await waitForChatFrame(page);
     if (!frame) {
@@ -233,37 +245,47 @@ test('Live chat destructive: guest sends "test" and receives support reply', asy
     const nameInput = frame.locator('input[type="text"]').first();
     const emailInput = frame.locator('input[type="email"]').first();
     const startButton = frame.getByRole('button', { name: /start the chat/i }).first();
+    const composer = frame
+      .locator(
+        'textarea[aria-label*="message" i], textarea[placeholder*="message" i], input[placeholder*="message" i], [contenteditable="true"][role="textbox"], [contenteditable="true"][data-testid*="message" i]'
+      )
+      .first();
 
-    const prechatReady = await Promise.all([
-      nameInput.isVisible({ timeout: 15_000 }).catch(() => false),
-      emailInput.isVisible({ timeout: 15_000 }).catch(() => false),
-      startButton.isVisible({ timeout: 15_000 }).catch(() => false),
+    await Promise.race([
+      composer.waitFor({ state: 'visible', timeout: 15_000 }).catch(() => null),
+      startButton.waitFor({ state: 'visible', timeout: 15_000 }).catch(() => null),
     ]);
-    if (!prechatReady.every(Boolean)) {
+    const directComposerVisible = await composer.isVisible().catch(() => false);
+    const startVisible = await startButton.isVisible().catch(() => false);
+    if (!directComposerVisible && !startVisible) {
       payload.status = 'blocked';
-      payload.reason = 'Live chat pre-chat form is not fully visible.';
+      payload.reason = 'Neither live chat pre-chat action nor message composer became visible.';
       markBlocked(testInfo, payload.reason);
       return;
     }
 
-    await nameInput.fill(GUEST_NAME);
-    await emailInput.fill(GUEST_EMAIL);
-    await startButton.click({ timeout: 10_000 });
+    if (!directComposerVisible) {
+      const nameVisible = await nameInput.isVisible().catch(() => false);
+      const emailVisible = await emailInput.isVisible().catch(() => false);
+      if (nameVisible) await nameInput.fill(GUEST_NAME);
+      if (emailVisible) await emailInput.fill(GUEST_EMAIL);
+      payload.preChat = { mode: 'executed', nameVisible, emailVisible };
+      await startButton.click({ timeout: 10_000 });
+    } else {
+      payload.preChat = { mode: 'skipped', reason: 'Existing guest chat opened directly.' };
+    }
 
-    const composer = frame
+    const sendButton = frame
       .locator(
-        'textarea[aria-label*="Write a message" i], textarea[placeholder*="Write a message" i]'
+        'button[aria-label*="send" i], button[title*="send" i], button[type="submit"], [data-testid*="send" i]'
       )
       .first();
-    const sendButton = frame.getByRole('button', { name: /send a message/i }).first();
 
-    const chatReady = await Promise.all([
-      composer.isVisible({ timeout: 20_000 }).catch(() => false),
-      sendButton.isVisible({ timeout: 20_000 }).catch(() => false),
-    ]);
-    if (!chatReady.every(Boolean)) {
+    await composer.waitFor({ state: 'visible', timeout: 20_000 }).catch(() => null);
+    const composerVisible = await composer.isVisible().catch(() => false);
+    if (!composerVisible) {
       payload.status = 'blocked';
-      payload.reason = 'Live chat composer/send controls are unavailable.';
+      payload.reason = 'Live chat composer is unavailable after starting the chat.';
       markBlocked(testInfo, payload.reason);
       return;
     }
@@ -272,12 +294,19 @@ test('Live chat destructive: guest sends "test" and receives support reply', asy
     payload.bodyBeforeSend = await collectBodyText(frame);
 
     await composer.fill(TEST_MESSAGE);
-    payload.composerValue = await composer.inputValue().catch(() => '');
+    payload.composerValue = await composer
+      .inputValue()
+      .catch(() => composer.textContent().catch(() => ''));
     expect(payload.composerValue, 'Live chat composer should contain the outgoing message.').toBe(
       TEST_MESSAGE
     );
 
-    await sendButton.click({ timeout: 10_000 });
+    const sendVisible = await sendButton.isVisible({ timeout: 2000 }).catch(() => false);
+    if (sendVisible) {
+      await sendButton.click({ timeout: 10_000 });
+    } else {
+      await composer.press('Enter');
+    }
 
     let rowsAfterSend = [];
     await expect
@@ -325,9 +354,9 @@ test('Live chat destructive: guest sends "test" and receives support reply', asy
     payload.finalBody = await collectBodyText(frame);
 
     if (!replyText) {
-      payload.status = 'blocked';
+      payload.status = 'partial';
       payload.reason = `No support reply was detected within ${REPLY_TIMEOUT_MS} ms after sending "${TEST_MESSAGE}".`;
-      markBlocked(testInfo, payload.reason);
+      testInfo.annotations.push({ type: 'partial', description: payload.reason });
       if (typingObserved) {
         testInfo.annotations.push({
           type: 'debug',

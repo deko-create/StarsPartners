@@ -2,6 +2,7 @@ const { test, expect } = require('../fixtures/qa-test');
 const fs = require('fs');
 const path = require('path');
 const {
+  clickLocatorRobust,
   createWafProbe,
   detectCloudflare,
   dismissOverlays,
@@ -168,14 +169,19 @@ async function runPreChatIfNeeded(frame, payload) {
   const emailInput = frame.locator('input[type="email"]').first();
   const startButton = frame.getByRole('button', { name: /start the chat/i }).first();
 
-  const hasStart = await startButton.isVisible({ timeout: 2000 }).catch(() => false);
+  await startButton.waitFor({ state: 'visible', timeout: 10_000 }).catch(() => null);
+  const hasStart = await startButton.isVisible().catch(() => false);
   if (!hasStart) {
     payload.preChat = { mode: 'skipped', reason: 'Pre-chat form not shown for authorized user.' };
     return;
   }
 
-  const hasName = await nameInput.isVisible({ timeout: 4000 }).catch(() => false);
-  const hasEmail = await emailInput.isVisible({ timeout: 4000 }).catch(() => false);
+  await Promise.all([
+    nameInput.waitFor({ state: 'visible', timeout: 4000 }).catch(() => null),
+    emailInput.waitFor({ state: 'visible', timeout: 4000 }).catch(() => null),
+  ]);
+  const hasName = await nameInput.isVisible().catch(() => false);
+  const hasEmail = await emailInput.isVisible().catch(() => false);
 
   if (hasName) {
     await nameInput
@@ -264,10 +270,11 @@ test('Live chat destructive: authorized player sends message and sees chat activ
 
     const trigger = page
       .locator(
-        '[data-testid="sidebar-Live chat-button"], [data-testid="sidebar-liveChat-button"], [data-testid="online-chat-button"], a:has-text("Live chat"), button:has-text("Live chat"), [role="button"]:has-text("Live chat")'
+        '[data-testid="sidebar-Live chat-button"]:visible, [data-testid="sidebar-liveChat-button"]:visible, [data-testid="online-chat-button"]:visible, a:has-text("Live chat"):visible, button:has-text("Live chat"):visible, [role="button"]:has-text("Live chat"):visible'
       )
       .first();
-    const triggerVisible = await trigger.isVisible({ timeout: 15_000 }).catch(() => false);
+    await trigger.waitFor({ state: 'visible', timeout: 15_000 }).catch(() => null);
+    const triggerVisible = await trigger.isVisible().catch(() => false);
     if (!triggerVisible) {
       payload.status = 'blocked';
       payload.reason = 'Live chat trigger is not visible in current authorized layout.';
@@ -275,7 +282,17 @@ test('Live chat destructive: authorized player sends message and sees chat activ
       return;
     }
 
-    await trigger.click({ timeout: 10_000 });
+    const triggerClicked = await clickLocatorRobust(page, trigger, {
+      timeout: 10_000,
+      waitForNavigation: false,
+      settleTimeout: 700,
+    }).catch(() => false);
+    if (!triggerClicked) {
+      payload.status = 'blocked';
+      payload.reason = 'Live chat trigger was visible but did not accept the click.';
+      markBlocked(testInfo, payload.reason);
+      return;
+    }
     const frame = await waitForChatFrame(page);
     if (!frame) {
       payload.status = 'blocked';
@@ -288,18 +305,20 @@ test('Live chat destructive: authorized player sends message and sees chat activ
 
     const composer = frame
       .locator(
-        'textarea[aria-label*="Write a message" i], textarea[placeholder*="Write a message" i]'
+        'textarea[aria-label*="message" i], textarea[placeholder*="message" i], input[placeholder*="message" i], [contenteditable="true"][role="textbox"], [contenteditable="true"][data-testid*="message" i]'
       )
       .first();
-    const sendButton = frame.getByRole('button', { name: /send a message/i }).first();
+    const sendButton = frame
+      .locator(
+        'button[aria-label*="send" i], button[title*="send" i], button[type="submit"], [data-testid*="send" i]'
+      )
+      .first();
 
-    const chatReady = await Promise.all([
-      composer.isVisible({ timeout: 20_000 }).catch(() => false),
-      sendButton.isVisible({ timeout: 20_000 }).catch(() => false),
-    ]);
-    if (!chatReady.every(Boolean)) {
+    await composer.waitFor({ state: 'visible', timeout: 20_000 }).catch(() => null);
+    const composerVisible = await composer.isVisible().catch(() => false);
+    if (!composerVisible) {
       payload.status = 'blocked';
-      payload.reason = 'Live chat composer/send controls are unavailable for authorized user.';
+      payload.reason = 'Live chat composer is unavailable for authorized user.';
       markBlocked(testInfo, payload.reason);
       return;
     }
@@ -308,12 +327,19 @@ test('Live chat destructive: authorized player sends message and sees chat activ
     payload.bodyBeforeSend = await collectBodyText(frame);
 
     await composer.fill(TEST_MESSAGE);
-    payload.composerValue = await composer.inputValue().catch(() => '');
+    payload.composerValue = await composer
+      .inputValue()
+      .catch(() => composer.textContent().catch(() => ''));
     expect(payload.composerValue, 'Live chat composer should contain the outgoing message.').toBe(
       TEST_MESSAGE
     );
 
-    await sendButton.click({ timeout: 10_000 });
+    const sendVisible = await sendButton.isVisible({ timeout: 2000 }).catch(() => false);
+    if (sendVisible) {
+      await sendButton.click({ timeout: 10_000 });
+    } else {
+      await composer.press('Enter');
+    }
 
     let rowsAfterSend = [];
     await expect

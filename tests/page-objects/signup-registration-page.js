@@ -32,6 +32,10 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function debugSignup(message) {
+  if (process.env.PW_DEBUG_SIGNUP === '1') console.log(`[signup-debug] ${message}`);
+}
+
 const CONTINUE_BUTTON_SELECTORS = [
   'button:has-text("CONTINUE")',
   'button:has-text("Continue")',
@@ -76,14 +80,18 @@ class SignupRegistrationPage {
   async fillFirstVisible(selectors, value) {
     const container = this.getContainer();
     for (const selector of selectors) {
-      const input = container.locator(selector).first();
-      try {
-        if (await input.isVisible()) {
-          await input.fill(value);
-          return true;
+      const inputs = container.locator(selector);
+      const count = Math.min(await inputs.count().catch(() => 0), 12);
+      for (let index = 0; index < count; index += 1) {
+        const input = inputs.nth(index);
+        try {
+          if (await input.isVisible()) {
+            await input.fill(value);
+            return true;
+          }
+        } catch {
+          // try next matching input
         }
-      } catch {
-        // try next selector
       }
     }
     return false;
@@ -92,13 +100,17 @@ class SignupRegistrationPage {
   async findActionButton(selectors) {
     const container = this.getContainer();
     for (const selector of selectors) {
-      const btn = container.locator(selector).first();
-      try {
-        if (await btn.isVisible()) {
-          return btn;
+      const buttons = container.locator(selector);
+      const count = Math.min(await buttons.count().catch(() => 0), 12);
+      for (let index = 0; index < count; index += 1) {
+        const btn = buttons.nth(index);
+        try {
+          if (await btn.isVisible()) {
+            return btn;
+          }
+        } catch {
+          // try next matching button
         }
-      } catch {
-        // try next selector
       }
     }
     return null;
@@ -894,11 +906,13 @@ class SignupRegistrationPage {
   async ensureSignupTab() {
     const container = this.getContainer();
     const signupTab = container
-      .locator('button:has-text("Sign Up"), a:has-text("Sign Up")')
+      .locator(
+        '[role="tab"]:has-text("Sign Up"), a:has-text("Sign Up"), button:not([type="submit"]):has-text("Sign Up")'
+      )
       .first();
     try {
-      if (await signupTab.isVisible()) {
-        await signupTab.click();
+      if ((await signupTab.isVisible()) && (await signupTab.isEnabled())) {
+        await signupTab.click({ timeout: 3000 });
       }
     } catch {
       // ignore
@@ -924,14 +938,19 @@ class SignupRegistrationPage {
   }
 
   async fillStep1(data, opts = {}) {
+    debugSignup('fillStep1:start');
     const { annotate, errorToast, signupTab } = opts;
     const container = this.getContainer();
 
     const emailInput = container
-      .locator('input[type="email"], input[name="email"], input[placeholder*="Email"]')
+      .locator(
+        'input[type="email"]:visible, input[name="email"]:visible, input[placeholder*="Email"]:visible'
+      )
       .first();
     const passwordInput = container
-      .locator('input[type="password"], input[name="password"], input[placeholder*="Password"]')
+      .locator(
+        'input[type="password"]:visible, input[name="password"]:visible, input[placeholder*="Password"]:visible'
+      )
       .first();
 
     await emailInput.waitFor({ state: 'visible', timeout: 10000 }).catch(() => null);
@@ -941,6 +960,7 @@ class SignupRegistrationPage {
       ['input[type="email"]', 'input[name="email"]', 'input[placeholder*="Email"]'],
       data.email
     );
+    debugSignup(`fillStep1:email=${String(emailFilled)}`);
     if (!emailFilled) {
       const emailFallback = container.locator('input:visible:not([type="password"])').first();
       if (await emailFallback.isVisible().catch(() => false)) {
@@ -949,7 +969,7 @@ class SignupRegistrationPage {
       }
     }
 
-    const passwordInputs = container.locator('input[type="password"]');
+    const passwordInputs = container.locator('input[type="password"]:visible');
     const passwordCount = await passwordInputs.count();
     let passwordFilled = false;
     if (passwordCount >= 1) {
@@ -964,8 +984,24 @@ class SignupRegistrationPage {
     if (passwordCount >= 2) {
       await passwordInputs.nth(1).fill(data.password);
     }
+    debugSignup(`fillStep1:password=${String(passwordFilled)} count=${passwordCount}`);
+    // Some brands render registration as a single step and require the phone
+    // before the same submit button can become actionable.
+    await this.fillFirstVisible(
+      ['input[type="tel"]', 'input[name="phone"]', 'input[placeholder*="Phone" i]'],
+      data.phone
+    );
+    await container
+      .locator(
+        'input[type="tel"]:visible, input[name="phone"]:visible, input[placeholder*="Phone" i]:visible'
+      )
+      .first()
+      .press('Tab')
+      .catch(() => null);
+    debugSignup('fillStep1:phone-blurred');
 
     await this.acceptTermsIfPresent();
+    debugSignup('fillStep1:fields-filled');
 
     const stepSelectors = CONTINUE_BUTTON_SELECTORS;
 
@@ -997,6 +1033,11 @@ class SignupRegistrationPage {
 
     expect(step1Btn, 'Continue button not found on step 1').toBeTruthy();
     if (step1Btn) {
+      const step1Label = String(
+        (await step1Btn.innerText().catch(() => '')) ||
+          (await step1Btn.getAttribute('value').catch(() => ''))
+      ).trim();
+      const singleStepSubmit = /sign\s*up|create\s*(?:account)?|register/i.test(step1Label);
       if (await step1Btn.isDisabled().catch(() => false)) {
         const currentEmail = await emailInput.inputValue().catch(() => '');
         const currentPassword = await passwordInput.inputValue().catch(() => '');
@@ -1024,6 +1065,21 @@ class SignupRegistrationPage {
         await passwordInput.press('Tab').catch(() => null);
         await sleep(500);
         await this.acceptTermsIfPresent();
+
+        const phoneInput = container
+          .locator(
+            'input[type="tel"]:visible, input[name="phone"]:visible, input[placeholder*="Phone" i]:visible'
+          )
+          .first();
+        if (await phoneInput.isVisible().catch(() => false)) {
+          const phoneDigits = String(data.phone || '').replace(/\D+/g, '');
+          if (phoneDigits.length > 9) {
+            await phoneInput.fill(phoneDigits.slice(-9));
+            await phoneInput.press('Tab').catch(() => null);
+            await sleep(500);
+            this.addNote(annotate, 'Adjusted visible phone input to a 9-digit national number.');
+          }
+        }
       }
 
       const currentEmail = await emailInput.inputValue().catch(() => '');
@@ -1097,7 +1153,10 @@ class SignupRegistrationPage {
           }`
         );
       });
+      debugSignup(`fillStep1:clicked:${step1Label || 'unlabelled'}`);
+      return singleStepSubmit;
     }
+    return false;
   }
 
   async fillStep2(data, opts = {}) {
@@ -1241,7 +1300,19 @@ class SignupRegistrationPage {
   async completeRegistration(data, opts = {}) {
     const errorToast = opts.errorToast || this.page.getByText(/something went wrong/i).first();
     const signupTab = await this.ensureSignupTab();
-    await this.fillStep1(data, { ...opts, errorToast, signupTab });
+    debugSignup('complete:signup-tab-ready');
+    const completedSingleStep = await this.fillStep1(data, { ...opts, errorToast, signupTab });
+    debugSignup(`complete:step1-finished:single=${String(completedSingleStep)}`);
+    if (completedSingleStep) return;
+    const depositAfterSignup = await this.page
+      .getByText(/deposit\s*&\s*play/i)
+      .first()
+      .isVisible({ timeout: 1200 })
+      .catch(() => false);
+    const containerStillVisible = await this.getContainer()
+      .isVisible({ timeout: 1200 })
+      .catch(() => false);
+    if (depositAfterSignup || !containerStillVisible) return;
     await this.fillStep2(data, { ...opts, errorToast });
     await this.fillStep3AndSubmit(data, { ...opts, errorToast });
   }

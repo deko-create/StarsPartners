@@ -615,7 +615,10 @@ async function runTrackedPlaywright(args, envOverride = {}, metadata = {}) {
     startedAt: new Date(startedAtMs).toISOString(),
     durationMs: Math.max(0, Date.now() - startedAtMs),
     code: Number(result.code || 0),
-    wafSignal: isCloudflareBlocked(result.output || ''),
+    // Successful output can contain diagnostic words such as "Cloudflare"
+    // without the phase being blocked. The phase report remains the source of
+    // truth for soft/annotated WAF signals; attempt-level WAF is for failures.
+    wafSignal: Number(result.code || 0) !== 0 && isCloudflareBlocked(result.output || ''),
   });
   persistExecutionJournal(false);
   return result;
@@ -2368,8 +2371,9 @@ async function runSuiteWithRetry({
       });
       if (!authStateHealthLatest.healthy) {
         providerCasinoRecoveryNeeded = true;
+        suiteEnv.PW_PROVIDER_FAST_FAIL_ON_UI_BLOCKED = '1';
         console.log(
-          '\n⚠️  Auth state is not healthy before casino suite; forcing casino route recovery refresh.'
+          '\n⚠️  Auth state is not healthy before casino suite; enabling provider fast-fail and forcing casino route recovery refresh.'
         );
       }
 

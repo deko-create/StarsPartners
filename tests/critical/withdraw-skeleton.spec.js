@@ -4,6 +4,7 @@ const { URL } = require('url');
 const { test, expect } = require('../fixtures/qa-test');
 const {
   closeModal,
+  clickLocatorRobust,
   detectCloudflare,
   dismissOverlays,
   markBlocked,
@@ -125,15 +126,14 @@ async function firstVisibleLocator(scope, selectors) {
 
 async function detectWithdrawContainer(page) {
   const selectors = [
-    '[data-testid="withdraw-modal"]',
-    '[data-testid*="withdraw" i]',
-    '.t-modal-fund',
     '.t-popup.t-modal-fund-global',
+    '.t-popup__component.t-modal-fund.withdrawal',
+    '.t-modal-fund',
     '.t-assets-modal-withdraw',
     '.t-assets-modal',
+    '[data-testid="withdraw-modal"]',
+    '[data-testid*="withdraw" i]:not(button):has(input)',
     '[role="dialog"]:visible',
-    '[class*="withdraw" i]',
-    '[class*="cashier" i]',
   ];
 
   return firstVisibleLocator(page, selectors);
@@ -144,7 +144,7 @@ async function collectWithdrawSnapshot(page, container) {
 
   const methods = await scope
     .locator(
-      '[data-testid^="withdraw-method-"], [class*="withdraw-method" i], [class*="payment-method" i], .t-fund-payment-method__grid-item'
+      '[data-testid^="withdraw-method-"], [data-testid="assets_withdrawal_method-tabs"], [class*="withdraw-method" i], [class*="payment-method" i], .t-fund-payment-method__grid-item'
     )
     .evaluateAll((nodes) =>
       nodes
@@ -155,13 +155,15 @@ async function collectWithdrawSnapshot(page, container) {
 
   const controls = {
     amountInputVisible: await scope
-      .locator('input[name*="amount" i], input[placeholder*="amount" i], input[type="number"]')
+      .locator(
+        'input[name*="amount" i], input[placeholder*="amount" i], input[placeholder*="Enter amount" i], input[type="number"]'
+      )
       .first()
       .isVisible({ timeout: 500 })
       .catch(() => false),
     submitVisible: await scope
       .locator(
-        'button:has-text("Withdraw"), button:has-text("Submit"), button:has-text("Continue"), [data-testid*="withdraw-submit" i]'
+        'button:has-text("Withdraw"), button:has-text("Withdrawal"), button:has-text("Submit"), button:has-text("Continue"), [data-testid*="withdraw-submit" i]'
       )
       .first()
       .isVisible({ timeout: 500 })
@@ -242,8 +244,16 @@ test('Withdraw skeleton: open withdraw surface and validate controls', async ({
       return;
     }
 
+    await page
+      .getByRole('button', { name: /^withdrawal?$/i })
+      .first()
+      .waitFor({ state: 'visible', timeout: 8000 })
+      .catch(() => null);
+
     const trigger = await firstVisibleLocator(page, [
+      '[data-testid="assets_withdrawal_open-button"]',
       'button:has-text("Withdraw")',
+      'button:has-text("Withdrawal")',
       'a:has-text("Withdraw")',
       '[data-testid*="withdraw" i]',
       '.t-header__withdraw',
@@ -261,9 +271,19 @@ test('Withdraw skeleton: open withdraw surface and validate controls', async ({
     payload.triggerFound = true;
     payload.triggerText = oneLine(await trigger.innerText().catch(() => ''));
 
-    await trigger.scrollIntoViewIfNeeded().catch(() => null);
-    await trigger.click({ timeout: 10_000 }).catch(() => null);
+    await clickLocatorRobust(page, trigger, {
+      timeout: 10_000,
+      waitForNavigation: false,
+      settleTimeout: 1200,
+    }).catch(() => false);
     await waitForUiSettled(page, 1400);
+    await page
+      .locator(
+        '.t-popup.t-modal-fund-global:visible, .t-popup__component.t-modal-fund.withdrawal:visible'
+      )
+      .first()
+      .waitFor({ state: 'visible', timeout: 8000 })
+      .catch(() => null);
 
     const container = await detectWithdrawContainer(page);
     if (!container) {
@@ -273,6 +293,14 @@ test('Withdraw skeleton: open withdraw surface and validate controls', async ({
       await attachArtifact(testInfo, payload);
       return;
     }
+
+    await container
+      .locator(
+        'input[placeholder*="amount" i], input[type="number"], [data-testid="fund-withdrawal-amount-field"] input'
+      )
+      .first()
+      .waitFor({ state: 'visible', timeout: 8000 })
+      .catch(() => null);
 
     const snapshot = await collectWithdrawSnapshot(page, container);
     payload.withdrawSnapshot = snapshot;

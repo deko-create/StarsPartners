@@ -379,7 +379,10 @@ function buildRunEnv({ brand, mode, cwd, runProfile }) {
     // A challenge from one provider is not evidence that every subsequent
     // provider is blocked. Keep executing the matrix unless explicitly opted in.
     PW_PROVIDER_FAST_FAIL_ON_UI_BLOCKED: process.env.PW_PROVIDER_FAST_FAIL_ON_UI_BLOCKED || '0',
-    PW_LOGIN_PREFER_TOKEN_FALLBACK: process.env.PW_LOGIN_PREFER_TOKEN_FALLBACK || '1',
+    // Prefer a real password login. Token fallback is allowed only after the
+    // token has been proven to establish an authorized session for this brand.
+    PW_LOGIN_PREFER_TOKEN_FALLBACK: process.env.PW_LOGIN_PREFER_TOKEN_FALLBACK || '0',
+    PW_LOGIN_ALLOW_SHARED_PLAYER: process.env.PW_LOGIN_ALLOW_SHARED_PLAYER || '0',
     PW_USER_AGENT: process.env.PW_USER_AGENT || cdpMetaUserAgent || '',
     PW_MOBILE_STABILIZE_RERUN: process.env.PW_MOBILE_STABILIZE_RERUN || '0',
     PW_SUITE_REFRESH_MAX:

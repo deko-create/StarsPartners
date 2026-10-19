@@ -24,16 +24,31 @@ const CURRENT_RUN_PLAYER_PATH = path.join(
 );
 const VOLATILE_PLAYER_PATH = path.join(PROJECT_TEST_RESULTS_DIR, 'registration-data.json');
 const MANUAL_READY_PLAYER_PATH = path.join(PROJECT_ARTIFACTS_DIR, 'last-manual-login-player.json');
+const MODE_PROJECT_ROOT = path.dirname(PROJECT_ARTIFACTS_DIR);
+const BRAND_PROJECT_ROOT = ['desktop', 'mobile'].includes(path.basename(MODE_PROJECT_ROOT))
+  ? path.dirname(MODE_PROJECT_ROOT)
+  : MODE_PROJECT_ROOT;
+const BRAND_ARTIFACTS_DIR = path.join(BRAND_PROJECT_ROOT, 'artifacts');
+const LOCAL_PLAYER_ARTIFACT_PATHS = [
+  CURRENT_RUN_PLAYER_PATH,
+  STABLE_PLAYER_PATH,
+  MANUAL_READY_PLAYER_PATH,
+  path.join(BRAND_ARTIFACTS_DIR, 'registration-data-current-run.json'),
+  path.join(BRAND_ARTIFACTS_DIR, 'last-registered-player.json'),
+  path.join(BRAND_ARTIFACTS_DIR, 'last-manual-login-player.json'),
+].filter((candidate, index, all) => all.indexOf(candidate) === index);
 const AUTH_STATE_OUTPUT_PATHS = [
   path.join(PROJECT_ARTIFACTS_DIR, 'registration-auth-state.json'),
   path.join(PROJECT_ARTIFACTS_DIR, 'profile-auth-state.json'),
   path.join(PROJECT_ARTIFACTS_DIR, 'site-coverage-auth-state.json'),
   path.join(PROJECT_ARTIFACTS_DIR, 'button-sweep-auth-state.json'),
 ];
-const PLAYER_ARTIFACT_PATHS = [STABLE_PLAYER_PATH, CURRENT_RUN_PLAYER_PATH, VOLATILE_PLAYER_PATH];
+const PLAYER_ARTIFACT_PATHS = [...LOCAL_PLAYER_ARTIFACT_PATHS, VOLATILE_PLAYER_PATH];
 const REQUIRE_REGISTERED_LOGIN = process.env.PW_LOGIN_REQUIRE_REGISTERED === '1';
 const USE_ENV_LOGIN_FIRST = process.env.PW_LOGIN_USE_ENV === '1';
-const ALLOW_SHARED_PLAYER_FALLBACK = process.env.PW_LOGIN_ALLOW_SHARED_PLAYER !== '0';
+// Cross-brand credentials are unsafe: a token issued by chacha.bet, for example,
+// must never be persisted as a supposedly authorized gt.bet session.
+const ALLOW_SHARED_PLAYER_FALLBACK = process.env.PW_LOGIN_ALLOW_SHARED_PLAYER === '1';
 const CURRENT_PROJECT_ROOT = process.env.QA_PROJECT_ROOT
   ? path.resolve(String(process.env.QA_PROJECT_ROOT))
   : '';
@@ -235,22 +250,38 @@ function isAuthLikeResponse(url, method) {
 }
 
 function getCredsFromStableArtifact() {
-  try {
-    if (!fs.existsSync(STABLE_PLAYER_PATH)) return null;
-    const payload = JSON.parse(fs.readFileSync(STABLE_PLAYER_PATH, 'utf8'));
-    const loginEmail = payload ? payload.loginEmail || payload.email : '';
-    if (!payload || !loginEmail || !payload.password) return null;
-    return {
-      email: String(loginEmail),
-      password: String(payload.password),
-      authToken:
-        typeof payload.authToken === 'string' && payload.authToken.length >= 10
-          ? payload.authToken
-          : '',
-    };
-  } catch {
-    return null;
+  const candidates = [];
+  for (const filePath of LOCAL_PLAYER_ARTIFACT_PATHS) {
+    try {
+      if (!fs.existsSync(filePath)) continue;
+      const payload = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      const loginEmail = payload ? payload.loginEmail || payload.email : '';
+      if (!payload || !loginEmail || !payload.password) continue;
+      const stat = fs.statSync(filePath);
+      const score = Math.max(
+        parseIsoDate(payload.loginValidationAt),
+        parseIsoDate(payload.generatedAt),
+        Number(stat.mtimeMs) || 0
+      );
+      candidates.push({
+        score,
+        creds: {
+          email: String(loginEmail),
+          password: String(payload.password),
+          authToken:
+            typeof payload.authToken === 'string' && payload.authToken.length >= 10
+              ? payload.authToken
+              : '',
+          artifactPath: filePath,
+        },
+      });
+    } catch {
+      // Ignore malformed or incomplete same-brand artifacts.
+    }
   }
+  if (!candidates.length) return null;
+  candidates.sort((left, right) => right.score - left.score);
+  return candidates[0].creds;
 }
 
 function parseIsoDate(value) {
@@ -616,10 +647,20 @@ async function fallbackToTokenLoginIfAvailable({
     artifactCreds.authToken.length >= 10;
   if (!hasTokenFallback) return false;
 
-  await applyAuthTokenCookie(page.context(), artifactCreds.authToken, BASE_URL);
-  await page.goto(BASE_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => null);
-  await dismissOverlays(page);
-  await waitForLoginSurface(page, { mobileRun }).catch(() => null);
+  const tokenSession = await establishVerifiedTokenSession({
+    page,
+    token: artifactCreds.authToken,
+    mobileRun,
+  });
+  if (!tokenSession.authorized) {
+    testInfo.annotations.push({
+      type: 'auth-diagnostic',
+      description: `Token fallback rejected: session is not authorized (preferencesStatus=${String(
+        tokenSession.probe.preferencesStatus
+      )}, loginVisible=${String(tokenSession.probe.loginVisible)}).`,
+    });
+    return false;
+  }
 
   loginOutcome.savedAuthStates = await persistAuthStates(page.context());
   loginOutcome.status = 'blocked-token-fallback';
@@ -682,6 +723,21 @@ async function probeCurrentAuthState(page) {
   };
 }
 
+async function establishVerifiedTokenSession({ page, token, mobileRun }) {
+  await applyAuthTokenCookie(page.context(), token, BASE_URL);
+  await page.goto(BASE_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => null);
+  await dismissOverlays(page);
+  await waitForLoginSurface(page, { mobileRun }).catch(() => null);
+  const probe = await probeCurrentAuthState(page);
+  if (!probe.authorized) {
+    await page
+      .context()
+      .clearCookies({ name: 'auth._token.local' })
+      .catch(() => null);
+  }
+  return { authorized: probe.authorized, probe };
+}
+
 test('Log In flow: auth request is handled correctly', async ({ page }, testInfo) => {
   const mobileRun = isMobileProjectRun(testInfo);
   test.setTimeout(mobileRun ? 150000 : 180000);
@@ -692,7 +748,7 @@ test('Log In flow: auth request is handled correctly', async ({ page }, testInfo
     REQUIRE_REGISTERED_LOGIN && !localArtifactCreds ? getCredsFromSharedProjectArtifacts() : null;
   const artifactCreds = localArtifactCreds || (sharedArtifact ? sharedArtifact.creds : null);
   const artifactCredsPath = localArtifactCreds
-    ? STABLE_PLAYER_PATH
+    ? localArtifactCreds.artifactPath || STABLE_PLAYER_PATH
     : sharedArtifact
       ? sharedArtifact.filePath
       : STABLE_PLAYER_PATH;
@@ -759,46 +815,58 @@ test('Log In flow: auth request is handled correctly', async ({ page }, testInfo
     if (preferTokenFallback) {
       const reason =
         'Token fallback preferred for this brand run; UI password sign-in is treated as diagnostic to avoid Cloudflare/browser shutdown flake.';
-      await applyAuthTokenCookie(page.context(), artifactCreds.authToken, BASE_URL);
-      await page
-        .goto(BASE_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 })
-        .catch(() => null);
-      await dismissOverlays(page);
-      await waitForLoginSurface(page, { mobileRun }).catch(() => null);
-      loginOutcome.savedAuthStates = await persistAuthStates(page.context());
-      loginOutcome.status = 'token-fallback-preferred';
-      loginOutcome.reason = reason;
-      markTokenFallbackDiagnostic(testInfo, reason);
-      updatePlayerLoginValidation({
-        creds: artifactCreds,
-        status: 'token-fallback-only',
-        method: 'auth-token-cookie',
-        reason,
+      const tokenSession = await establishVerifiedTokenSession({
+        page,
+        token: artifactCreds.authToken,
+        mobileRun,
       });
-      testInfo.annotations.push({
-        type: 'login',
-        description: reason,
-      });
-      return;
-    }
-    if (await maybeSkipWaf({ page, probe: wafProbe, testInfo })) {
-      if (REQUIRE_REGISTERED_LOGIN && artifactCreds && artifactCreds.authToken) {
-        await applyAuthTokenCookie(page.context(), artifactCreds.authToken, BASE_URL);
+      if (tokenSession.authorized) {
         loginOutcome.savedAuthStates = await persistAuthStates(page.context());
-        loginOutcome.status = 'blocked-token-fallback';
-        loginOutcome.reason =
-          'WAF blocked login UI; token fallback applied, but password sign-in was not validated.';
-        markTokenFallbackDiagnostic(testInfo, loginOutcome.reason);
+        loginOutcome.status = 'token-fallback-preferred';
+        loginOutcome.reason = reason;
+        markTokenFallbackDiagnostic(testInfo, reason);
         updatePlayerLoginValidation({
           creds: artifactCreds,
           status: 'token-fallback-only',
           method: 'auth-token-cookie',
+          reason,
+        });
+        testInfo.annotations.push({ type: 'login', description: reason });
+        return;
+      }
+      testInfo.annotations.push({
+        type: 'auth-diagnostic',
+        description: `Preferred token fallback was rejected; continuing with password login (preferencesStatus=${String(
+          tokenSession.probe.preferencesStatus
+        )}).`,
+      });
+    }
+    if (await maybeSkipWaf({ page, probe: wafProbe, testInfo })) {
+      if (REQUIRE_REGISTERED_LOGIN && artifactCreds && artifactCreds.authToken) {
+        const tokenSession = await establishVerifiedTokenSession({
+          page,
+          token: artifactCreds.authToken,
+          mobileRun,
+        });
+        loginOutcome.status = tokenSession.authorized ? 'blocked-token-fallback' : 'blocked';
+        loginOutcome.reason = tokenSession.authorized
+          ? 'WAF blocked login UI; verified token fallback established an authorized session.'
+          : 'WAF blocked login UI and the available token fallback was rejected.';
+        if (tokenSession.authorized) {
+          loginOutcome.savedAuthStates = await persistAuthStates(page.context());
+          markTokenFallbackDiagnostic(testInfo, loginOutcome.reason);
+        } else {
+          markBlocked(testInfo, loginOutcome.reason);
+        }
+        updatePlayerLoginValidation({
+          creds: artifactCreds,
+          status: tokenSession.authorized ? 'token-fallback-only' : 'signin-blocked-waf',
+          method: tokenSession.authorized ? 'auth-token-cookie' : 'ui-signin',
           reason: loginOutcome.reason,
         });
         testInfo.annotations.push({
           type: 'login',
-          description:
-            'WAF blocked UI login; token fallback persisted auth state, manual password sign-in is not validated.',
+          description: loginOutcome.reason,
         });
       } else if (REQUIRE_REGISTERED_LOGIN && artifactCreds) {
         updatePlayerLoginValidation({
@@ -843,29 +911,25 @@ test('Log In flow: auth request is handled correctly', async ({ page }, testInfo
         Boolean(artifactCreds && typeof artifactCreds.authToken === 'string') &&
         artifactCreds.authToken.length >= 10;
       if (hasTokenFallback) {
-        await applyAuthTokenCookie(page.context(), artifactCreds.authToken, BASE_URL);
-        await page
-          .goto(BASE_URL, { waitUntil: 'domcontentloaded', timeout: 30000 })
-          .catch(() => null);
-        await dismissOverlays(page);
-        await waitForLoginSurface(page, { mobileRun }).catch(() => null);
-        loginOutcome.savedAuthStates = await persistAuthStates(page.context());
-        loginOutcome.status = 'blocked-token-fallback';
-        loginOutcome.reason =
-          'Log In modal did not open; auth-token fallback applied and auth-state persisted.';
-        markTokenFallbackDiagnostic(testInfo, loginOutcome.reason);
-        updatePlayerLoginValidation({
-          creds: artifactCreds,
-          status: 'token-fallback-only',
-          method: 'auth-token-cookie',
-          reason: loginOutcome.reason,
+        const tokenSession = await establishVerifiedTokenSession({
+          page,
+          token: artifactCreds.authToken,
+          mobileRun,
         });
-        testInfo.annotations.push({
-          type: 'login',
-          description:
-            'UI login modal was unavailable; token fallback kept authorized coverage for downstream phases.',
-        });
-        return;
+        if (tokenSession.authorized) {
+          loginOutcome.savedAuthStates = await persistAuthStates(page.context());
+          loginOutcome.status = 'blocked-token-fallback';
+          loginOutcome.reason =
+            'Log In modal did not open; verified token fallback established an authorized session.';
+          markTokenFallbackDiagnostic(testInfo, loginOutcome.reason);
+          updatePlayerLoginValidation({
+            creds: artifactCreds,
+            status: 'token-fallback-only',
+            method: 'auth-token-cookie',
+            reason: loginOutcome.reason,
+          });
+          return;
+        }
       }
       throw modalError;
     }
@@ -1105,23 +1169,24 @@ test('Log In flow: auth request is handled correctly', async ({ page }, testInfo
             Boolean(artifactCreds && typeof artifactCreds.authToken === 'string') &&
             artifactCreds.authToken.length >= 10;
           if (hasTokenFallback) {
-            await applyAuthTokenCookie(page.context(), artifactCreds.authToken, BASE_URL);
-            await page
-              .goto(BASE_URL, { waitUntil: 'domcontentloaded', timeout: 30000 })
-              .catch(() => null);
-            await dismissOverlays(page);
-            await waitForLoginSurface(page, { mobileRun }).catch(() => null);
-            loginOutcome.savedAuthStates = await persistAuthStates(page.context());
-            loginOutcome.status = 'blocked-token-fallback';
-            loginOutcome.reason = reason;
-            markTokenFallbackDiagnostic(testInfo, reason);
-            updatePlayerLoginValidation({
-              creds,
-              status: 'signin-email-mutated-by-ui',
-              method: 'ui-signin',
-              reason,
+            const tokenSession = await establishVerifiedTokenSession({
+              page,
+              token: artifactCreds.authToken,
+              mobileRun,
             });
-            return;
+            if (tokenSession.authorized) {
+              loginOutcome.savedAuthStates = await persistAuthStates(page.context());
+              loginOutcome.status = 'blocked-token-fallback';
+              loginOutcome.reason = reason;
+              markTokenFallbackDiagnostic(testInfo, reason);
+              updatePlayerLoginValidation({
+                creds,
+                status: 'signin-email-mutated-by-ui',
+                method: 'ui-signin',
+                reason,
+              });
+              return;
+            }
           }
 
           markBlocked(testInfo, reason);
@@ -1155,25 +1220,25 @@ test('Log In flow: auth request is handled correctly', async ({ page }, testInfo
         Boolean(artifactCreds && typeof artifactCreds.authToken === 'string') &&
         artifactCreds.authToken.length >= 10;
       if (hasTokenFallback) {
-        await applyAuthTokenCookie(page.context(), artifactCreds.authToken, BASE_URL);
-        await page
-          .goto(BASE_URL, { waitUntil: 'domcontentloaded', timeout: 30000 })
-          .catch(() => null);
-        await dismissOverlays(page);
-        await waitForLoginSurface(page, { mobileRun }).catch(() => null);
-
-        loginOutcome.savedAuthStates = await persistAuthStates(page.context());
-        loginOutcome.status = 'blocked-token-fallback';
-        loginOutcome.reason =
-          'Login form fields were not accessible; token fallback established a session, but manual password sign-in was not validated.';
-        markTokenFallbackDiagnostic(testInfo, loginOutcome.reason);
-        updatePlayerLoginValidation({
-          creds,
-          status: 'token-fallback-only',
-          method: 'auth-token-cookie',
-          reason: loginOutcome.reason,
+        const tokenSession = await establishVerifiedTokenSession({
+          page,
+          token: artifactCreds.authToken,
+          mobileRun,
         });
-        return;
+        if (tokenSession.authorized) {
+          loginOutcome.savedAuthStates = await persistAuthStates(page.context());
+          loginOutcome.status = 'blocked-token-fallback';
+          loginOutcome.reason =
+            'Login form fields were unavailable; verified token fallback established an authorized session.';
+          markTokenFallbackDiagnostic(testInfo, loginOutcome.reason);
+          updatePlayerLoginValidation({
+            creds,
+            status: 'token-fallback-only',
+            method: 'auth-token-cookie',
+            reason: loginOutcome.reason,
+          });
+          return;
+        }
       }
 
       if (hasRealCreds) {
@@ -1242,30 +1307,26 @@ test('Log In flow: auth request is handled correctly', async ({ page }, testInfo
           Boolean(artifactCreds && typeof artifactCreds.authToken === 'string') &&
           artifactCreds.authToken.length >= 10;
         if (hasTokenFallback) {
-          await applyAuthTokenCookie(page.context(), artifactCreds.authToken, BASE_URL);
-          await page
-            .goto(BASE_URL, { waitUntil: 'domcontentloaded', timeout: fallbackGotoTimeoutMs })
-            .catch(() => null);
-          await dismissOverlays(page);
-          await waitForLoginSurface(page, { mobileRun }).catch(() => null);
-          loginOutcome.savedAuthStates = await persistAuthStates(page.context());
-          const reason =
-            'Captcha/Turnstile token was not issued in mobile flow; token fallback established a session, but manual password sign-in is not validated.';
-          loginOutcome.status = 'blocked-token-fallback';
-          loginOutcome.reason = reason;
-          markTokenFallbackDiagnostic(testInfo, reason);
-          updatePlayerLoginValidation({
-            creds,
-            status: 'token-fallback-only',
-            method: 'auth-token-cookie',
-            reason,
+          const tokenSession = await establishVerifiedTokenSession({
+            page,
+            token: artifactCreds.authToken,
+            mobileRun,
           });
-          testInfo.annotations.push({
-            type: 'login',
-            description:
-              'Mobile early-exit: Turnstile token was not issued; token fallback applied to keep auth step stable.',
-          });
-          return;
+          if (tokenSession.authorized) {
+            loginOutcome.savedAuthStates = await persistAuthStates(page.context());
+            const reason =
+              'Captcha/Turnstile token was not issued in mobile flow; verified token fallback established an authorized session.';
+            loginOutcome.status = 'blocked-token-fallback';
+            loginOutcome.reason = reason;
+            markTokenFallbackDiagnostic(testInfo, reason);
+            updatePlayerLoginValidation({
+              creds,
+              status: 'token-fallback-only',
+              method: 'auth-token-cookie',
+              reason,
+            });
+            return;
+          }
         }
       }
     }
@@ -1511,22 +1572,30 @@ test('Log In flow: auth request is handled correctly', async ({ page }, testInfo
   } catch (err) {
     if (await maybeSkipWaf({ page, probe: wafProbe, testInfo, error: err })) {
       if (REQUIRE_REGISTERED_LOGIN && artifactCreds && artifactCreds.authToken) {
-        await applyAuthTokenCookie(page.context(), artifactCreds.authToken, BASE_URL);
-        loginOutcome.savedAuthStates = await persistAuthStates(page.context());
-        loginOutcome.status = 'blocked-token-fallback';
-        loginOutcome.reason =
-          'WAF blocked login UI during error flow; token fallback applied, but password sign-in was not validated.';
-        markTokenFallbackDiagnostic(testInfo, loginOutcome.reason);
+        const tokenSession = await establishVerifiedTokenSession({
+          page,
+          token: artifactCreds.authToken,
+          mobileRun,
+        });
+        loginOutcome.status = tokenSession.authorized ? 'blocked-token-fallback' : 'blocked';
+        loginOutcome.reason = tokenSession.authorized
+          ? 'WAF blocked login UI during error flow; verified token fallback established an authorized session.'
+          : 'WAF blocked login UI during error flow and the available token fallback was rejected.';
+        if (tokenSession.authorized) {
+          loginOutcome.savedAuthStates = await persistAuthStates(page.context());
+          markTokenFallbackDiagnostic(testInfo, loginOutcome.reason);
+        } else {
+          markBlocked(testInfo, loginOutcome.reason);
+        }
         updatePlayerLoginValidation({
           creds: artifactCreds,
-          status: 'token-fallback-only',
-          method: 'auth-token-cookie',
+          status: tokenSession.authorized ? 'token-fallback-only' : 'signin-blocked-waf',
+          method: tokenSession.authorized ? 'auth-token-cookie' : 'ui-signin',
           reason: loginOutcome.reason,
         });
         testInfo.annotations.push({
           type: 'login',
-          description:
-            'WAF blocked UI login in error flow; token fallback persisted auth state, manual password sign-in is not validated.',
+          description: loginOutcome.reason,
         });
       } else if (REQUIRE_REGISTERED_LOGIN && artifactCreds) {
         updatePlayerLoginValidation({

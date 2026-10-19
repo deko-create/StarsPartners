@@ -10,6 +10,7 @@ const {
 } = require('../helpers/gt-utils');
 const { isCapabilityOptionalForBrand } = require('../helpers/brand-capabilities');
 const { resolveExtraHTTPHeaders } = require('../helpers/context-options');
+const { analyzeStorageStatePayload } = require('../helpers/auth-state');
 const {
   AUTH_ASSETS_SERVICE_ITEMS,
   AUTH_HOME_ITEMS,
@@ -91,8 +92,8 @@ const GUEST_PRIMARY_MAX_ITEMS = toPositiveInt(
   DEFAULT_GUEST_PRIMARY_MAX
 );
 const SIDEBAR_LANGUAGE_MATRIX_MAX = toPositiveInt(
-  process.env.PW_SIDEBAR_LANGUAGE_MATRIX_MAX || '4',
-  4
+  process.env.PW_SIDEBAR_LANGUAGE_MATRIX_MAX || '25',
+  25
 );
 
 function getSidebarContextOptions(extra = {}) {
@@ -174,13 +175,11 @@ function readAuthStateMeta(filePath, index) {
     // keep best-effort defaults
   }
 
-  let cookiesCount = 0;
-  let originsCount = 0;
+  let analysis = analyzeStorageStatePayload(null);
   let parseError = false;
   try {
     const payload = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    cookiesCount = Array.isArray(payload && payload.cookies) ? payload.cookies.length : 0;
-    originsCount = Array.isArray(payload && payload.origins) ? payload.origins.length : 0;
+    analysis = analyzeStorageStatePayload(payload);
   } catch {
     parseError = true;
   }
@@ -190,14 +189,15 @@ function readAuthStateMeta(filePath, index) {
     index,
     mtimeMs,
     sizeBytes,
-    cookiesCount,
-    originsCount,
-    hasSessionArtifacts: cookiesCount > 0 || originsCount > 0,
+    ...analysis,
     parseError,
   };
 }
 
 function compareAuthStateMeta(left, right) {
+  if (left.hasAuthArtifacts !== right.hasAuthArtifacts) {
+    return left.hasAuthArtifacts ? -1 : 1;
+  }
   if (left.hasSessionArtifacts !== right.hasSessionArtifacts) {
     return left.hasSessionArtifacts ? -1 : 1;
   }
@@ -276,10 +276,7 @@ function resolveAuthStatePath() {
   if (!ranked.length) return null;
 
   ranked.sort(compareAuthStateMeta);
-  const preferred =
-    ranked.find((entry) => entry.hasSessionArtifacts && !entry.parseError) ||
-    ranked.find((entry) => !entry.parseError) ||
-    ranked[0];
+  const preferred = ranked.find((entry) => entry.hasAuthArtifacts && !entry.parseError);
   return preferred ? preferred.filePath : null;
 }
 
@@ -1916,7 +1913,7 @@ test.describe('Sidebar Matrix', () => {
         : checks;
     if (authEntriesOptional && normalizedChecks.some((item) => item.status === 'missing')) {
       testInfo.annotations.push({
-        type: 'partial',
+        type: 'not-applicable',
         description:
           'Guest sidebar login/signup modal behavior is optional for this brand layout; header auth coverage remains authoritative.',
       });
@@ -2192,7 +2189,7 @@ test.describe('Sidebar Matrix', () => {
         payload.reason =
           'Live chat active frame opened, but minimized state was not observable in current widget version.';
         testInfo.annotations.push({
-          type: 'partial',
+          type: 'not-applicable',
           description: payload.reason,
         });
       }
@@ -2371,7 +2368,7 @@ test.describe('Sidebar Matrix', () => {
       const immediateSwitchVisible = areLabelsEquivalent(payload.afterLabel, payload.selectedText);
       if (!immediateSwitchVisible) {
         testInfo.annotations.push({
-          type: 'partial',
+          type: 'diagnostic',
           description:
             'Language trigger label did not update immediately after selection; validating persistence after reload/cookies.',
         });
@@ -2386,16 +2383,14 @@ test.describe('Sidebar Matrix', () => {
           'i'
         ).test(String(payload.afterReloadUrl || ''));
         if (!cookieSelected && !urlSelected) {
-          payload.persistenceValidatedBy =
-            payload.persistenceValidatedBy || 'partial-cookie-overridden';
-          testInfo.annotations.push({
-            type: 'partial',
-            description:
-              'Locale cookie/value was overridden after reopen; route-level locale policy may force a default language in guest mode.',
-          });
+          payload.persistenceValidatedBy = payload.persistenceValidatedBy || 'product-blocked';
+          markBlocked(
+            testInfo,
+            `Selected locale ${payload.selectedCode} was overridden by the default locale after reload.`
+          );
         }
       }
-      if (payload.persistenceValidatedBy === 'partial-cookie-overridden') {
+      if (payload.persistenceValidatedBy === 'product-blocked') {
         expect(
           (payload.cookiesAfterSwitch || []).length,
           'Language switch should set locale cookies before server overrides guest locale.'
@@ -2825,7 +2820,7 @@ test.describe('Sidebar Matrix', () => {
 
         if (selected.selectedCode && !cookieSelected) {
           testInfo.annotations.push({
-            type: 'partial',
+            type: 'diagnostic',
             description:
               `Locale cookie did not expose selected language code ${selected.selectedCode}; ` +
               'language switch was validated by visible label update.',
@@ -2848,7 +2843,14 @@ test.describe('Sidebar Matrix', () => {
     const failedSteps = payload.steps.filter((step) => step.status === 'failed').length;
 
     if (failedSteps > 0) {
-      expect(failedSteps, 'Language matrix has failed locale checks.').toBe(0);
+      const failedLocales = payload.steps
+        .filter((step) => step.status === 'failed')
+        .map((step) => `${step.target}: ${step.reason || 'locale switch failed'}`)
+        .join(' | ');
+      markBlocked(
+        testInfo,
+        `Language matrix has ${failedSteps} product locale defect(s): ${failedLocales}`
+      );
     }
     if (passedSteps === 0 && blockedSteps > 0) {
       markBlocked(

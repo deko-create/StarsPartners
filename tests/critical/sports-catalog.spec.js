@@ -1576,7 +1576,7 @@ test.describe('Sports Coverage: interactions + diagnostics', () => {
       expect(remainedOnSports, 'After back, page should remain on /sports route.').toBeTruthy();
       if (backAction.strategy === 'sports-navigation') {
         testInfo.annotations.push({
-          type: 'partial',
+          type: 'fallback-navigation',
           description:
             'The embedded widget did not expose a semantic Back control; persistent Sports navigation returned to the sports list.',
         });
@@ -1988,10 +1988,16 @@ test.describe('Sports Coverage: interactions + diagnostics', () => {
         ? []
         : responseErrors.filter((row) => isOptionalBetBuilder404(row));
       const authProbeErrors = responseErrors.filter((row) => isNonCriticalAuthProbeError(row));
+      const fontAssetErrors = responseErrors.filter(
+        (row) => row.resourceType === 'font' || /\.(?:woff2?|ttf|otf|eot)(?:\?|$)/i.test(row.url)
+      );
       const criticalHttp = responseErrors.filter((row) => {
         const url = String(row.url || '');
         if (!betBuilderUiVisible && isOptionalBetBuilder404(row)) return false;
         if (isNonCriticalAuthProbeError(row)) return false;
+        if (row.resourceType === 'font' || /\.(?:woff2?|ttf|otf|eot)(?:\?|$)/i.test(url)) {
+          return false;
+        }
         const inMainDomain = isMainBrandUrl(url);
         if (row.status >= 500) return true;
         if (row.status >= 400 && inMainDomain && !isAllowed403(url)) return true;
@@ -2033,6 +2039,12 @@ test.describe('Sports Coverage: interactions + diagnostics', () => {
           description: `${authProbeErrors.length} background /api/auth/user probe(s) returned 400/403 while the authorized sports UI remained usable.`,
         });
       }
+      if (fontAssetErrors.length > 0) {
+        testInfo.annotations.push({
+          type: 'product-warning',
+          description: `${fontAssetErrors.length} font asset request(s) returned HTTP errors. Typography may fall back, but functional Sports coverage remains valid.`,
+        });
+      }
       if (invalidFlagRequests.length > 0) {
         testInfo.annotations.push({
           type: 'product-warning',
@@ -2053,7 +2065,7 @@ test.describe('Sports Coverage: interactions + diagnostics', () => {
       }
       if (noisyFailedRequests.length > 0) {
         testInfo.annotations.push({
-          type: 'partial',
+          type: 'diagnostic',
           description: `Ignored ${noisyFailedRequests.length} noisy failed request(s) (ORB/static asset/known transient).`,
         });
       }
@@ -2073,6 +2085,7 @@ test.describe('Sports Coverage: interactions + diagnostics', () => {
           ignored403: ignored.length,
           optionalCapabilityErrors: optionalCapabilityErrors.length,
           authProbeErrors: authProbeErrors.length,
+          fontAssetErrors: fontAssetErrors.length,
           betBuilderUiVisible,
           criticalHttp: criticalHttp.length,
           failedRequests: failedRequests.length,
@@ -2088,6 +2101,7 @@ test.describe('Sports Coverage: interactions + diagnostics', () => {
         ignored403: ignored,
         optionalCapabilityErrors,
         authProbeErrors,
+        fontAssetErrors,
         criticalHttp,
         failedRequests,
         noisyFailedRequests,
@@ -2321,10 +2335,10 @@ test.describe('Sports Coverage: interactions + diagnostics', () => {
       ).toBeTruthy();
 
       if (warnings.length) {
-        testInfo.annotations.push({
-          type: 'partial',
-          description: `Sports metadata has ${warnings.length} warning(s); see attached artifact.`,
-        });
+        markBlocked(
+          testInfo,
+          `Sports metadata has ${warnings.length} product defect(s): title/H1/canonical requirements are not met.`
+        );
         testInfo.annotations.push({
           type: 'product-warning',
           description: `Sports metadata requires a product fix. Remediation contract: ${
@@ -2416,7 +2430,7 @@ test.describe('Sports Coverage: interactions + diagnostics', () => {
 
       if (noSockets) {
         testInfo.annotations.push({
-          type: 'partial',
+          type: 'diagnostic',
           description:
             'Sports routes opened, but no WebSocket connections were observed in this observation window.',
         });

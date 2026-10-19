@@ -2100,9 +2100,9 @@ test.describe('Deposit non-destructive checks', () => {
           });
         }
         testInfo.annotations.push({
-          type: 'partial',
+          type: 'diagnostic',
           description:
-            'UI deposit labels are technical (deposit-method-*), so inventory validation uses method count instead of category-name matching.',
+            'UI deposit labels are technical (deposit-method-*); method-count validation is used and remains conclusive when UI/API counts align.',
         });
       } else {
         const apiCategorySet = new Set(
