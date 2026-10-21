@@ -192,6 +192,7 @@ async function collectWithdrawSnapshot(page, container) {
 test('Withdraw skeleton: open withdraw surface and validate controls', async ({
   browser,
 }, testInfo) => {
+  test.setTimeout(120_000);
   const authStatePath = pickAuthStatePath();
   if (!authStatePath) {
     const payload = {
@@ -218,10 +219,14 @@ test('Withdraw skeleton: open withdraw surface and validate controls', async ({
     triggerFound: false,
     triggerText: '',
     withdrawSnapshot: null,
+    stages: [],
   };
 
   try {
-    const route = await openRoute(page, '/assets/');
+    const routeStartedAt = Date.now();
+    const route = await test.step('Open authorized assets route', () =>
+      openRoute(page, '/assets/'));
+    payload.stages.push({ name: 'open-assets', durationMs: Date.now() - routeStartedAt });
     payload.route = route;
     if (route.challenge) {
       payload.blocked = true;
@@ -271,11 +276,25 @@ test('Withdraw skeleton: open withdraw surface and validate controls', async ({
     payload.triggerFound = true;
     payload.triggerText = oneLine(await trigger.innerText().catch(() => ''));
 
-    await clickLocatorRobust(page, trigger, {
-      timeout: 10_000,
-      waitForNavigation: false,
-      settleTimeout: 1200,
-    }).catch(() => false);
+    const triggerStartedAt = Date.now();
+    const triggerClicked = await test.step('Open withdraw surface', () =>
+      clickLocatorRobust(page, trigger, {
+        timeout: 10_000,
+        waitForNavigation: false,
+        settleTimeout: 1200,
+      }).catch(() => false));
+    payload.stages.push({
+      name: 'open-withdraw',
+      durationMs: Date.now() - triggerStartedAt,
+      ok: triggerClicked,
+    });
+    if (!triggerClicked) {
+      payload.blocked = true;
+      payload.reason = 'Withdraw trigger was visible but did not accept the click.';
+      markBlocked(testInfo, payload.reason);
+      await attachArtifact(testInfo, payload);
+      return;
+    }
     await waitForUiSettled(page, 1400);
     await page
       .locator(
@@ -302,7 +321,13 @@ test('Withdraw skeleton: open withdraw surface and validate controls', async ({
       .waitFor({ state: 'visible', timeout: 8000 })
       .catch(() => null);
 
-    const snapshot = await collectWithdrawSnapshot(page, container);
+    const snapshotStartedAt = Date.now();
+    const snapshot = await test.step('Collect withdraw controls', () =>
+      collectWithdrawSnapshot(page, container));
+    payload.stages.push({
+      name: 'collect-controls',
+      durationMs: Date.now() - snapshotStartedAt,
+    });
     payload.withdrawSnapshot = snapshot;
 
     const hasAnyControl =

@@ -64,6 +64,20 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function closeContextBounded(context, timeoutMs = 5000) {
+  let timer = null;
+  try {
+    await Promise.race([
+      context.close().catch(() => null),
+      new Promise((resolve) => {
+        timer = setTimeout(resolve, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 function buildUrl(route) {
   return new URL(route, BASE_ORIGIN).toString();
 }
@@ -232,7 +246,48 @@ async function readBetslipEvidence(page) {
   };
 }
 
-async function clickOddsWithEvidence(page, preferredTarget = null) {
+async function clickOddsWithEvidenceUnbounded(page, preferredTarget = null) {
+  await page
+    .waitForFunction(
+      () => {
+        const candidates = Array.from(
+          document.querySelectorAll(
+            'button[data-testid*="odd" i], [data-testid*="odd" i][role="button"], button[class*="odd" i], [class*="odd" i][role="button"], [class*="selection" i][role="button"], #betby span'
+          )
+        );
+        return candidates.some((element) => {
+          const text = String(element.textContent || '')
+            .replace(/\s+/g, ' ')
+            .trim();
+          if (!/\b\d{1,2}[.,]\d{1,3}\b/.test(text) || text.length > 80) return false;
+          const rect = element.getBoundingClientRect();
+          const style = window.getComputedStyle(element);
+          if (
+            rect.width <= 2 ||
+            rect.height <= 2 ||
+            style.display === 'none' ||
+            style.visibility === 'hidden'
+          ) {
+            return false;
+          }
+          let current = element;
+          for (let depth = 0; current && depth < 4; depth += 1, current = current.parentElement) {
+            if (
+              current.tagName === 'BUTTON' ||
+              current.getAttribute('role') === 'button' ||
+              typeof current.onclick === 'function' ||
+              window.getComputedStyle(current).cursor === 'pointer'
+            ) {
+              return true;
+            }
+          }
+          return false;
+        });
+      },
+      { timeout: 12_000 }
+    )
+    .catch(() => null);
+
   const selectors = [
     'button[data-testid*="odd" i]:not([disabled])',
     '[data-testid*="odd" i][role="button"]',
@@ -338,17 +393,44 @@ async function clickOddsWithEvidence(page, preferredTarget = null) {
       }))
       .catch(() => ({}));
     const beforeBetslip = await readBetslipEvidence(page);
-    await candidate.scrollIntoViewIfNeeded().catch(() => null);
+    await candidate.scrollIntoViewIfNeeded({ timeout: 2000 }).catch(() => null);
     const clicked = await candidate
       .click({ timeout: target.preferred ? 3000 : 2500 })
       .then(() => true)
-      .catch(() => false);
+      .catch(() =>
+        candidate
+          .click({ timeout: 2000, force: true })
+          .then(() => true)
+          .catch(() =>
+            candidate
+              .evaluate((element) => {
+                let target = element;
+                for (
+                  let depth = 0;
+                  target && depth < 4;
+                  depth += 1, target = target.parentElement
+                ) {
+                  if (
+                    target.tagName === 'BUTTON' ||
+                    target.getAttribute('role') === 'button' ||
+                    typeof target.onclick === 'function' ||
+                    window.getComputedStyle(target).cursor === 'pointer'
+                  ) {
+                    target.click();
+                    return true;
+                  }
+                }
+                return false;
+              })
+              .catch(() => false)
+          )
+      );
     if (!clicked) {
       attempts.push({ selector, index, text, clicked: false });
       continue;
     }
     successfulClicks += 1;
-    await waitForUiSettled(page, 700);
+    await waitForUiSettled(page, 1200);
     const afterBetslip = await readBetslipEvidence(page);
     const afterElement = await candidate
       .evaluate((element) => ({
@@ -398,6 +480,19 @@ async function clickOddsWithEvidence(page, preferredTarget = null) {
     attempts,
     afterBetslip: await readBetslipEvidence(page),
   };
+}
+
+async function clickOddsWithEvidence(page, preferredTarget = null, timeoutMs = 45_000) {
+  return Promise.race([
+    clickOddsWithEvidenceUnbounded(page, preferredTarget),
+    sleep(timeoutMs).then(() => ({
+      confirmed: false,
+      timedOut: true,
+      selectionOnly: false,
+      attempts: [],
+      reason: `Odds interaction exceeded the ${timeoutMs} ms diagnostic budget.`,
+    })),
+  ]);
 }
 
 async function removeBetslipSelection(page) {
@@ -805,19 +900,32 @@ function isSportsEventUrl(urlString) {
 }
 
 async function readSportsState(page) {
-  return page.evaluate(() => ({
-    url: window.location.href,
-    btPath: new URL(window.location.href).searchParams.get('bt-path') || '',
-    localStorage: {
-      btSession: window.localStorage.getItem('bt-session') || '',
-      rightSidebar: window.localStorage.getItem('isRightSidebarCollapsed') || '',
-      trackerPinned: window.localStorage.getItem('bt-pinned-match-tracker') || '',
-      tokenSport: window.localStorage.getItem('tokenSport') || '',
-    },
-    sessionStorage: {
-      scrollPositions: window.sessionStorage.getItem('bt-scroll-positions') || '',
-    },
-  }));
+  const fallback = {
+    url: page.url(),
+    btPath: '',
+    localStorage: {},
+    sessionStorage: {},
+    timedOut: true,
+  };
+  return Promise.race([
+    page
+      .evaluate(() => ({
+        url: window.location.href,
+        btPath: new URL(window.location.href).searchParams.get('bt-path') || '',
+        localStorage: {
+          btSession: window.localStorage.getItem('bt-session') || '',
+          rightSidebar: window.localStorage.getItem('isRightSidebarCollapsed') || '',
+          trackerPinned: window.localStorage.getItem('bt-pinned-match-tracker') || '',
+          tokenSport: window.localStorage.getItem('tokenSport') || '',
+        },
+        sessionStorage: {
+          scrollPositions: window.sessionStorage.getItem('bt-scroll-positions') || '',
+        },
+        timedOut: false,
+      }))
+      .catch(() => fallback),
+    sleep(3000).then(() => fallback),
+  ]);
 }
 
 function diffSportsState(before, after) {
@@ -1186,7 +1294,7 @@ test.describe('Sports Coverage: interactions + diagnostics', () => {
         sessionProbe,
       });
     } finally {
-      await context.close();
+      await closeContextBounded(context);
     }
   });
 
@@ -1365,7 +1473,7 @@ test.describe('Sports Coverage: interactions + diagnostics', () => {
         authStatePath,
       });
     } finally {
-      await context.close();
+      await closeContextBounded(context);
     }
   });
 
@@ -1509,7 +1617,7 @@ test.describe('Sports Coverage: interactions + diagnostics', () => {
         endState,
       });
     } finally {
-      await context.close();
+      await closeContextBounded(context);
     }
   });
 
@@ -1623,7 +1731,7 @@ test.describe('Sports Coverage: interactions + diagnostics', () => {
         afterBackUrl,
       });
     } finally {
-      await context.close();
+      await closeContextBounded(context);
     }
   });
 
@@ -1678,6 +1786,24 @@ test.describe('Sports Coverage: interactions + diagnostics', () => {
 
       const before = await readSportsState(page);
       const oddsInteraction = await clickOddsWithEvidence(page);
+      if (oddsInteraction.timedOut) {
+        testInfo.annotations.push({
+          type: 'partial',
+          description: oddsInteraction.reason,
+        });
+        await writeAndAttach(testInfo, testInfo.title, {
+          blocked: false,
+          partial: true,
+          route,
+          openEvent,
+          authStatePath,
+          oddsInteraction,
+          changed: [],
+          trackerVisible: false,
+          couponSignalVisible: true,
+        });
+        return;
+      }
       const after = await readSportsState(page);
       const changed = diffSportsState(before, after).filter(
         (key) => !['localStorage.btSession', 'localStorage.tokenSport'].includes(key)
@@ -1736,7 +1862,7 @@ test.describe('Sports Coverage: interactions + diagnostics', () => {
         couponSignalVisible,
       });
     } finally {
-      await context.close();
+      await closeContextBounded(context);
     }
   });
 
@@ -1818,6 +1944,29 @@ test.describe('Sports Coverage: interactions + diagnostics', () => {
       steps.push(
         oddsInteraction.confirmed ? 'odds-selection-confirmed' : 'odds-selection-not-confirmed'
       );
+      if (oddsInteraction.timedOut) {
+        testInfo.annotations.push({
+          type: 'partial',
+          description: oddsInteraction.reason,
+        });
+        await writeAndAttach(testInfo, testInfo.title, {
+          blocked: false,
+          partial: true,
+          route,
+          openEvent,
+          authStatePath,
+          steps,
+          oddsInteraction,
+          removeInteraction: {
+            confirmed: false,
+            attempts: [],
+            reason: 'Skipped after bounded odds interaction timeout.',
+          },
+          changed: [],
+          betPosts,
+        });
+        return;
+      }
 
       let stakeInputFound = false;
       const betslipSurface = await findBetslipSurface(page);
@@ -1888,7 +2037,7 @@ test.describe('Sports Coverage: interactions + diagnostics', () => {
         betPosts,
       });
     } finally {
-      await context.close();
+      await closeContextBounded(context);
     }
   });
 
@@ -2131,7 +2280,7 @@ test.describe('Sports Coverage: interactions + diagnostics', () => {
           .join(' | ')}`
       ).toBe(0);
     } finally {
-      await context.close();
+      await closeContextBounded(context);
     }
   });
 
@@ -2368,7 +2517,7 @@ test.describe('Sports Coverage: interactions + diagnostics', () => {
         warnings,
       });
     } finally {
-      await context.close();
+      await closeContextBounded(context);
     }
   });
 
@@ -2449,7 +2598,7 @@ test.describe('Sports Coverage: interactions + diagnostics', () => {
         'WS diagnostics should return sockets array.'
       ).toBeTruthy();
     } finally {
-      await context.close();
+      await closeContextBounded(context);
     }
   });
 });

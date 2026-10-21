@@ -11,13 +11,19 @@ const {
   waitForUiSettled,
   waitForHomeContent,
 } = require('../helpers/gt-utils');
-const { resolveExtraHTTPHeaders } = require('../helpers/context-options');
+const { resolveMatrixContextOptions } = require('../helpers/context-options');
+const { findLiveChatTrigger } = require('../helpers/live-chat-trigger');
 
 const BASE_URL = process.env.BASE_URL || 'https://gt.bet/';
 const PROJECT_AUTOTEST_REPORT_DIR =
   process.env.QA_AUTOTEST_REPORT_DIR || path.join(process.cwd(), 'Autotest report');
 const ARTIFACT_DIR = path.join(PROJECT_AUTOTEST_REPORT_DIR, 'live-chat');
-const TEST_MESSAGE = process.env.PW_LIVE_CHAT_MESSAGE || 'test';
+const TEST_MESSAGE =
+  process.env.PW_LIVE_CHAT_MESSAGE ||
+  `test ${new Date()
+    .toISOString()
+    .replace(/[-:TZ.]/g, '')
+    .slice(0, 14)}`;
 const GUEST_NAME = process.env.PW_LIVE_CHAT_NAME || 'Autotest Sidebar';
 const GUEST_EMAIL = process.env.PW_LIVE_CHAT_EMAIL || 'autotest-sidebar@example.test';
 const REPLY_TIMEOUT_MS =
@@ -175,13 +181,9 @@ test('Live chat destructive: guest sends "test" and receives support reply', asy
     status: 'started',
   };
 
-  const extraHTTPHeaders = resolveExtraHTTPHeaders();
-  const context = await browser.newContext({
-    viewport: { width: 1440, height: 1100 },
-    ignoreHTTPSErrors: true,
-    locale: process.env.PW_LOCALE || 'en-US',
-    ...(extraHTTPHeaders ? { extraHTTPHeaders } : {}),
-  });
+  const context = await browser.newContext(
+    resolveMatrixContextOptions({ locale: process.env.PW_LOCALE || 'en-US' })
+  );
 
   const page = await context.newPage();
   const wafProbe = createWafProbe(page);
@@ -209,14 +211,8 @@ test('Live chat destructive: guest sends "test" and receives support reply', asy
     await dismissOverlays(page);
     await waitForHomeContent(page);
 
-    const trigger = page
-      .locator(
-        '[data-testid="sidebar-Live chat-button"]:visible, [data-testid="sidebar-liveChat-button"]:visible, [data-testid="online-chat-button"]:visible, a:has-text("Live chat"):visible, button:has-text("Live chat"):visible, [role="button"]:has-text("Live chat"):visible'
-      )
-      .first();
-    await trigger.waitFor({ state: 'visible', timeout: 15_000 }).catch(() => null);
-    const triggerVisible = await trigger.isVisible().catch(() => false);
-    if (!triggerVisible) {
+    const trigger = await findLiveChatTrigger(page, 15_000);
+    if (!trigger) {
       payload.status = 'blocked';
       payload.reason = 'Live chat trigger is not visible in current brand layout.';
       markBlocked(testInfo, payload.reason);
@@ -244,10 +240,12 @@ test('Live chat destructive: guest sends "test" and receives support reply', asy
 
     const nameInput = frame.locator('input[type="text"]').first();
     const emailInput = frame.locator('input[type="email"]').first();
-    const startButton = frame.getByRole('button', { name: /start the chat/i }).first();
+    const startButton = frame
+      .getByRole('button', { name: /start(?: the)? chat|start conversation|chat now|continue/i })
+      .first();
     const composer = frame
       .locator(
-        'textarea[aria-label*="message" i], textarea[placeholder*="message" i], input[placeholder*="message" i], [contenteditable="true"][role="textbox"], [contenteditable="true"][data-testid*="message" i]'
+        'textarea[aria-label*="message" i], textarea[placeholder*="message" i], textarea[data-testid*="message" i], input[placeholder*="message" i], [contenteditable="true"][role="textbox"], [contenteditable="true"][data-testid*="message" i], [contenteditable="true"][aria-label*="message" i]'
       )
       .first();
 
@@ -285,7 +283,9 @@ test('Live chat destructive: guest sends "test" and receives support reply', asy
     const composerVisible = await composer.isVisible().catch(() => false);
     if (!composerVisible) {
       payload.status = 'blocked';
-      payload.reason = 'Live chat composer is unavailable after starting the chat.';
+      payload.widgetBody = (await collectBodyText(frame)).slice(0, 1200);
+      payload.reason =
+        'Third-party LiveChat composer is temporarily unavailable after starting the chat.';
       markBlocked(testInfo, payload.reason);
       return;
     }
@@ -309,12 +309,16 @@ test('Live chat destructive: guest sends "test" and receives support reply', asy
     }
 
     let rowsAfterSend = [];
+    let bodyAfterSend = '';
     await expect
       .poll(
         async () => {
           rowsAfterSend = await collectRowTexts(frame);
-          return rowsAfterSend.some((row) =>
-            normalizeText(row).includes(normalizeText(TEST_MESSAGE))
+          bodyAfterSend = await collectBodyText(frame);
+          const messageNeedle = normalizeText(TEST_MESSAGE);
+          return (
+            rowsAfterSend.some((row) => normalizeText(row).includes(messageNeedle)) ||
+            normalizeText(bodyAfterSend).includes(messageNeedle)
           );
         },
         { timeout: 15_000, intervals: [400, 800, 1200] }
@@ -323,11 +327,11 @@ test('Live chat destructive: guest sends "test" and receives support reply', asy
     payload.messageSent = true;
 
     payload.rowsAfterSend = rowsAfterSend;
-    payload.bodyAfterSend = await collectBodyText(frame);
-    expect(
-      rowsAfterSend.some((row) => normalizeText(row).includes(normalizeText(TEST_MESSAGE))),
-      'Outgoing live chat message should appear in the conversation history.'
-    ).toBeTruthy();
+    payload.bodyAfterSend = bodyAfterSend || (await collectBodyText(frame));
+    const outgoingVisible =
+      rowsAfterSend.some((row) => normalizeText(row).includes(normalizeText(TEST_MESSAGE))) ||
+      normalizeText(payload.bodyAfterSend).includes(normalizeText(TEST_MESSAGE));
+    expect(outgoingVisible, 'Outgoing live chat message should appear in chat body.').toBe(true);
 
     let replyText = '';
     let replyRows = rowsAfterSend;

@@ -92,6 +92,14 @@ async function resolveWithTimeout(promise, timeoutMs) {
   return { timedOut: false, value: raced.value };
 }
 
+async function closeContextBounded(context, timeoutMs = 5000) {
+  if (!context) return;
+  await resolveWithTimeout(
+    context.close().catch(() => null),
+    timeoutMs
+  ).catch(() => null);
+}
+
 async function firstVisibleLocator(root, selectors) {
   for (const selector of selectors) {
     const locator = root.locator(selector);
@@ -264,6 +272,40 @@ async function collectCatalogEntries(page) {
       return [...unique.values()];
     })
     .catch(() => []);
+}
+
+async function pickVisibleCatalogSearchQuery(page) {
+  return page
+    .evaluate(() => {
+      const cards = Array.from(document.querySelectorAll('.t-game-item'));
+      for (const card of cards) {
+        const rect = card.getBoundingClientRect();
+        const style = window.getComputedStyle(card);
+        if (
+          rect.width < 16 ||
+          rect.height < 16 ||
+          style.display === 'none' ||
+          style.visibility === 'hidden'
+        ) {
+          continue;
+        }
+        const title = (
+          card.querySelector('.t-game-item__hover-name')?.textContent ||
+          card.querySelector('img[alt]')?.getAttribute('alt') ||
+          ''
+        )
+          .replace(/\s+/g, ' ')
+          .trim();
+        const query = title
+          .split(/\s+/)
+          .filter((word) => word.length >= 3)
+          .slice(0, 2)
+          .join(' ');
+        if (query) return { title, query };
+      }
+      return { title: '', query: '' };
+    })
+    .catch(() => ({ title: '', query: '' }));
 }
 
 async function mobileSidebarCoversViewport(page) {
@@ -524,6 +566,8 @@ async function collectSearchResultTitles(modalOrPage) {
     '[class*="search" i] [class*="name" i]',
     '[class*="game" i] [class*="title" i]',
     '[class*="game" i] [class*="name" i]',
+    '[class*="search" i] img[alt]',
+    '.t-game-search-modal img[alt]',
     'a[href*="/casino/"]',
   ];
 
@@ -535,7 +579,14 @@ async function collectSearchResultTitles(modalOrPage) {
       const item = items.nth(i);
       const visible = await item.isVisible().catch(() => false);
       if (!visible) continue;
-      const text = ((await item.innerText().catch(() => '')) || '').replace(/\s+/g, ' ').trim();
+      const text = (
+        (await item.innerText().catch(() => '')) ||
+        (await item.getAttribute('alt').catch(() => '')) ||
+        (await item.getAttribute('title').catch(() => '')) ||
+        ''
+      )
+        .replace(/\s+/g, ' ')
+        .trim();
       if (!text) continue;
       titles.push(text);
     }
@@ -872,23 +923,24 @@ async function filterPanelClear(panel) {
   let toggled = 0;
   for (const scope of scopes) {
     const rows = scope.locator(
-      '.t-games-filters-block.providers .t-games-select__checkbox .t-checkbox, .t-games-filters-block.providers .t-checkbox, .t-games-select__checkbox .t-checkbox'
+      '.t-games-filters-block.providers .t-checkbox.t-checkbox_checked, .t-games-filters-block.providers input[type="checkbox"]:checked, .t-games-filters-block.providers [role="checkbox"][aria-checked="true"]'
     );
-    const count = Math.min(await rows.count().catch(() => 0), 200);
+    const count = Math.min(await rows.count().catch(() => 0), 20);
     for (let i = 0; i < count; i += 1) {
       const row = rows.nth(i);
       const visible = await row.isVisible().catch(() => false);
       if (!visible) continue;
-      const checked = await row
-        .evaluate((node) => {
-          const classChecked = /\bt-checkbox_checked\b/i.test(String(node.className || ''));
-          const input = node.querySelector('input[type="checkbox"]');
-          return classChecked || Boolean(input && input.checked);
-        })
-        .catch(() => false);
-      if (!checked) continue;
-      await row.click({ timeout: 5000 }).catch(() => null);
-      toggled += 1;
+      const clicked = await row
+        .click({ timeout: 5000 })
+        .then(() => true)
+        .catch(async () => {
+          const label = row.locator('xpath=ancestor::label[1]');
+          return label
+            .click({ timeout: 3000 })
+            .then(() => true)
+            .catch(() => false);
+        });
+      if (clicked) toggled += 1;
       await waitForUiSettled(panel.page(), 200);
     }
   }
@@ -1532,11 +1584,15 @@ async function collectRecentEntries(page) {
       }
 
       const selectors = [
-        '.t-recent [class*="game" i]',
-        '.t-transactions [class*="game" i]',
-        '[class*="recent" i] [class*="item" i]',
+        '.t-recent .t-game-item',
+        '.t-recent .t-game-play',
+        '.t-transactions .t-game-item',
+        '.t-transactions .t-game-play',
+        '[class*="recent" i] .t-game-item',
+        '[class*="recent" i] .t-game-play',
         '[class*="recent" i] a[href*="/casino/"]',
-        'a[href*="/casino/"]',
+        '.t-games-catalog .t-game-item',
+        '.t-games-catalog .t-game-play',
       ];
       const out = [];
       const seen = new Set();
@@ -1569,6 +1625,11 @@ async function collectRecentEntries(page) {
             String(node.getAttribute('data-gid') || '').trim();
 
           const parsed = parseIdentity(href);
+          const looksLikeGameCard =
+            node.matches('.t-game-item, .t-game-play') ||
+            Boolean(node.closest('.t-game-item, .t-game-play')) ||
+            Boolean(node.querySelector('img'));
+          if (!looksLikeGameCard && !parsed.slug && !parsed.gameId) continue;
           const entry = {
             text,
             title,
@@ -1638,7 +1699,7 @@ async function withCasinoPage(browser, testInfo, testName, run) {
 
     await run({ context, page, route, authStatePath });
   } finally {
-    await context.close();
+    await closeContextBounded(context);
   }
 }
 
@@ -1651,7 +1712,13 @@ test.describe('Casino Catalog Coverage: search/filter/load more/game launch', ()
   test('P0.1 Search modal: open and close', async ({ browser }, testInfo) => {
     const testName = 'p0_1_search_open_close';
     await withCasinoPage(browser, testInfo, testName, async ({ page, route, authStatePath }) => {
-      const search = await openSearchModal(page);
+      let search = await openSearchModal(page);
+      if (!search.opened || !search.inputVisible || !search.input) {
+        await dismissOverlays(page);
+        await closeMobileSidebarIfOpen(page);
+        await waitForUiSettled(page, 700);
+        search = await openSearchModal(page);
+      }
       if (!search.opened || !search.inputVisible) {
         const reason = search.reason || 'Search modal/input is not available in current layout.';
         markBlocked(testInfo, reason);
@@ -1902,6 +1969,45 @@ test.describe('Casino Catalog Coverage: search/filter/load more/game launch', ()
       const clearClicked = await filterPanelClear(reopened.panel);
       if (!clearClicked) {
         const reason = 'CLEAR button is not available in filter panel.';
+        const clearDiagnostics = await reopened.panel
+          .evaluate((root) => ({
+            visibleButtons: Array.from(root.querySelectorAll('button'))
+              .filter((button) => {
+                const rect = button.getBoundingClientRect();
+                const style = globalThis.getComputedStyle(button);
+                return (
+                  rect.width > 0 &&
+                  rect.height > 0 &&
+                  style.display !== 'none' &&
+                  style.visibility !== 'hidden'
+                );
+              })
+              .map((button) => String(button.innerText || button.textContent || '').trim())
+              .filter(Boolean)
+              .slice(0, 30),
+            checkedControls: Array.from(
+              root.querySelectorAll(
+                '.t-checkbox.t-checkbox_checked, input[type="checkbox"]:checked, [role="checkbox"][aria-checked="true"]'
+              )
+            )
+              .map((node) => ({
+                tag: node.tagName,
+                className: String(node.className || ''),
+                text: String(node.textContent || '')
+                  .replace(/\s+/g, ' ')
+                  .trim()
+                  .slice(0, 120),
+              }))
+              .slice(0, 20),
+          }))
+          .catch(() => null);
+        const screenshot = await page.screenshot({ fullPage: false }).catch(() => null);
+        if (screenshot) {
+          await testInfo.attach('casino-filter-clear-unavailable.png', {
+            body: screenshot,
+            contentType: 'image/png',
+          });
+        }
         markBlocked(testInfo, reason);
         await writeAndAttach(testInfo, testName, {
           blocked: true,
@@ -1909,6 +2015,7 @@ test.describe('Casino Catalog Coverage: search/filter/load more/game launch', ()
           route,
           authStatePath,
           checkedBeforeClear,
+          clearDiagnostics,
         });
         return;
       }
@@ -2142,7 +2249,29 @@ test.describe('Casino Catalog Coverage: search/filter/load more/game launch', ()
         return;
       }
 
-      const search = await openSearchModal(page);
+      await waitForCasinoContent(page);
+      const searchTarget = await pickVisibleCatalogSearchQuery(page);
+      if (!searchTarget.query) {
+        const reason =
+          'Combined flow: selected provider produced no visible catalog title to search for.';
+        markBlocked(testInfo, reason);
+        await writeAndAttach(testInfo, testName, {
+          blocked: true,
+          reason,
+          route,
+          authStatePath,
+          selectedProvider: selected.providerName,
+        });
+        return;
+      }
+
+      let search = await openSearchModal(page);
+      if (!search.opened || !search.inputVisible || !search.input) {
+        await dismissOverlays(page);
+        await closeMobileSidebarIfOpen(page);
+        await waitForUiSettled(page, 700);
+        search = await openSearchModal(page);
+      }
       if (!search.opened || !search.inputVisible || !search.input) {
         const reason = search.reason || 'Combined flow: search modal/input is unavailable.';
         markBlocked(testInfo, reason);
@@ -2157,10 +2286,10 @@ test.describe('Casino Catalog Coverage: search/filter/load more/game launch', ()
       }
 
       await search.input.click({ timeout: 3000 }).catch(() => null);
-      await enterSearchQuery(search.input, 'coin');
+      await enterSearchQuery(search.input, searchTarget.query);
       const value = (await search.input.inputValue().catch(() => '')).toLowerCase();
       expect(
-        value.includes('coin'),
+        value.includes(searchTarget.query.toLowerCase()),
         'Combined flow: search input did not accept query text.'
       ).toBeTruthy();
       await waitForUiSettled(page, 2200);
@@ -2169,7 +2298,14 @@ test.describe('Casino Catalog Coverage: search/filter/load more/game launch', ()
       if (!titles.length) {
         const reason = 'Combined flow: search returned no titles after provider filter apply.';
         markBlocked(testInfo, reason);
-        await writeAndAttach(testInfo, testName, { blocked: true, reason, route, authStatePath });
+        await writeAndAttach(testInfo, testName, {
+          blocked: true,
+          reason,
+          route,
+          authStatePath,
+          selectedProvider: selected.providerName,
+          searchTarget,
+        });
         return;
       }
 
@@ -2198,6 +2334,7 @@ test.describe('Casino Catalog Coverage: search/filter/load more/game launch', ()
         route,
         authStatePath,
         selectedProvider: selected.providerName,
+        searchTarget,
         titlesCountAfterFilterAndSearch: titles.length,
         checkedAfterClear,
       };
@@ -3053,6 +3190,51 @@ test.describe('Casino Catalog Coverage: search/filter/load more/game launch', ()
         if (!strictMatched) {
           const reason =
             'Recent games list did not include launched game by strict id/slug/provider link during observation window.';
+          const recentDiagnostics = await page
+            .evaluate(() => ({
+              visibleHeadings: Array.from(document.querySelectorAll('h1, h2, h3'))
+                .filter((node) => {
+                  const rect = node.getBoundingClientRect();
+                  const style = globalThis.getComputedStyle(node);
+                  return (
+                    rect.width > 0 &&
+                    rect.height > 0 &&
+                    style.display !== 'none' &&
+                    style.visibility !== 'hidden'
+                  );
+                })
+                .map((node) =>
+                  String(node.textContent || '')
+                    .replace(/\s+/g, ' ')
+                    .trim()
+                )
+                .filter(Boolean)
+                .slice(0, 20),
+              visibleGameCards: Array.from(
+                document.querySelectorAll('.t-game-item, .t-game-play')
+              ).filter((node) => {
+                const rect = node.getBoundingClientRect();
+                const style = globalThis.getComputedStyle(node);
+                return (
+                  rect.width > 20 &&
+                  rect.height > 14 &&
+                  style.display !== 'none' &&
+                  style.visibility !== 'hidden'
+                );
+              }).length,
+              bodySample: String(document.body?.innerText || '')
+                .replace(/\s+/g, ' ')
+                .trim()
+                .slice(0, 1000),
+            }))
+            .catch(() => null);
+          const screenshot = await page.screenshot({ fullPage: false }).catch(() => null);
+          if (screenshot) {
+            await testInfo.attach('casino-recent-missing-launched-game.png', {
+              body: screenshot,
+              contentType: 'image/png',
+            });
+          }
           markBlocked(testInfo, reason);
           await writeAndAttach(testInfo, testName, {
             blocked: true,
@@ -3065,6 +3247,7 @@ test.describe('Casino Catalog Coverage: search/filter/load more/game launch', ()
             launchIdentity,
             looseMatched,
             historySnapshots,
+            recentDiagnostics,
           });
           return;
         }
@@ -3147,7 +3330,7 @@ test.describe('Casino Catalog Coverage: search/filter/load more/game launch', ()
           step: plan.step,
         });
       } finally {
-        await context.close();
+        await closeContextBounded(context);
       }
     }
 

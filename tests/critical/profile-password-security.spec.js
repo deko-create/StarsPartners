@@ -391,7 +391,12 @@ function classifySigninResult(result) {
   return 'invalid';
 }
 
-function updatePlayerArtifacts({ email, newPassword, sourceTest }) {
+function updatePlayerArtifacts({
+  email,
+  newPassword,
+  sourceTest,
+  validationStatus = 'password-signin-ok',
+}) {
   const normalizedEmail = normalizeEmail(email);
   if (!normalizedEmail) return { updated: false, updatedFiles: [] };
 
@@ -405,20 +410,25 @@ function updatePlayerArtifacts({ email, newPassword, sourceTest }) {
     const artifactEmail = normalizeEmail(payload.loginEmail || payload.email);
     if (artifactEmail !== normalizedEmail) continue;
 
+    const verified = validationStatus === 'password-signin-ok';
     const next = {
       ...payload,
       password: newPassword,
       passwordMasked: maskValue(newPassword),
-      manualLoginReady: true,
-      loginValidationStatus: 'password-signin-ok',
-      loginValidationMethod: 'profile-security-change + auth-signin-api',
-      loginValidationReason:
-        'Password rotated via profile security. Old password rejected and new password accepted by /api/auth/signin.',
+      manualLoginReady: verified,
+      loginValidationStatus: validationStatus,
+      loginValidationMethod: verified
+        ? 'profile-security-change + auth-signin-api'
+        : 'profile-security-change-api',
+      loginValidationReason: verified
+        ? 'Password rotated via profile security. Old password rejected and new password accepted by /api/auth/signin.'
+        : 'Password change returned success; signin verification is pending because infrastructure blocked the verification request.',
       loginValidationAt: new Date().toISOString(),
-      lastLoginCheckStatus: 'password-signin-ok',
-      lastLoginCheckMethod: 'auth-signin-api',
-      lastLoginCheckReason:
-        'Password rotated via profile security and verified via signin API (new password valid).',
+      lastLoginCheckStatus: validationStatus,
+      lastLoginCheckMethod: verified ? 'auth-signin-api' : 'profile-security-change-api',
+      lastLoginCheckReason: verified
+        ? 'Password rotated via profile security and verified via signin API (new password valid).'
+        : 'Signin verification pending after successful password change.',
       lastLoginCheckAt: new Date().toISOString(),
       source: sourceTest || payload.source || 'tests/critical/profile-password-security.spec.js',
     };
@@ -433,13 +443,13 @@ function updatePlayerArtifacts({ email, newPassword, sourceTest }) {
       ...latestPayload,
       source: sourceTest || 'tests/critical/profile-password-security.spec.js',
       generatedAt: new Date().toISOString(),
-      manualLoginReady: true,
+      manualLoginReady: validationStatus === 'password-signin-ok',
     });
 
     try {
       fs.writeFileSync(
         CANDIDATE_PATH,
-        `email=${latestPayload.loginEmail || latestPayload.email}\npassword=${newPassword}\nstatus=password-signin-ok\n`,
+        `email=${latestPayload.loginEmail || latestPayload.email}\npassword=${newPassword}\nstatus=${validationStatus}\n`,
         'utf8'
       );
       updatedFiles.push(CANDIDATE_PATH);
@@ -481,6 +491,7 @@ test('Profile security: change password and verify old password no longer signs 
     newPasswordMasked: '',
     openSecurity: null,
     passwordChange: null,
+    credentialPreflight: null,
     signinOld: null,
     signinNew: null,
     updatedArtifacts: null,
@@ -504,6 +515,38 @@ test('Profile security: change password and verify old password no longer signs 
   if (!player) {
     payload.blocked = true;
     payload.reason = 'Registered player credentials were not found in artifacts.';
+    markBlocked(testInfo, payload.reason);
+    const artifactPath = writeArtifact(payload);
+    await testInfo.attach('profile-password-security.json', {
+      body: serializeArtifactPayload(payload),
+      contentType: 'application/json',
+    });
+    testInfo.annotations.push({ type: 'artifact', description: artifactPath });
+    return;
+  }
+
+  const credentialPreflight = await signinViaApi(request, player.email, player.password);
+  payload.credentialPreflight = credentialPreflight;
+  const credentialPreflightStatus = classifySigninResult(credentialPreflight);
+  if (credentialPreflightStatus === 'invalid-credentials') {
+    payload.blocked = true;
+    payload.reason =
+      'Stored player credentials are invalid or stale; password rotation was not attempted.';
+    markBlocked(testInfo, payload.reason);
+    const artifactPath = writeArtifact(payload);
+    await testInfo.attach('profile-password-security.json', {
+      body: serializeArtifactPayload(payload),
+      contentType: 'application/json',
+    });
+    testInfo.annotations.push({ type: 'artifact', description: artifactPath });
+    return;
+  }
+  if (
+    credentialPreflightStatus === 'blocked-infra' ||
+    credentialPreflightStatus === 'blocked-challenge'
+  ) {
+    payload.blocked = true;
+    payload.reason = `Credential preflight was blocked by WAF/transport (HTTP ${credentialPreflight.status || 0}); password rotation was not attempted.`;
     markBlocked(testInfo, payload.reason);
     const artifactPath = writeArtifact(payload);
     await testInfo.attach('profile-password-security.json', {
@@ -552,6 +595,16 @@ test('Profile security: change password and verify old password no longer signs 
       return;
     }
 
+    // The product already accepted the password change. Persist the new secret
+    // before verification so a later WAF/transport block cannot leave the QA
+    // project pointing at the now-invalid old password.
+    payload.updatedArtifacts = updatePlayerArtifacts({
+      email: player.email,
+      newPassword,
+      sourceTest: 'tests/critical/profile-password-security.spec.js',
+      validationStatus: 'password-change-unverified',
+    });
+
     const signinOld = await signinViaApi(request, player.email, player.password);
     const signinNew = await signinViaApi(request, player.email, newPassword);
     payload.signinOld = signinOld;
@@ -583,6 +636,7 @@ test('Profile security: change password and verify old password no longer signs 
       email: player.email,
       newPassword,
       sourceTest: 'tests/critical/profile-password-security.spec.js',
+      validationStatus: 'password-signin-ok',
     });
     payload.updatedArtifacts = updatedArtifacts;
 

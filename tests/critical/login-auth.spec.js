@@ -12,6 +12,7 @@ const {
   waitForUiSettled,
 } = require('../helpers/gt-utils');
 const { applyAuthTokenCookie } = require('../helpers/signup-api-fallback');
+const { resolveMatrixContextOptions } = require('../helpers/context-options');
 
 const BASE_URL = process.env.BASE_URL || 'https://gt.bet/';
 const PROJECT_ARTIFACTS_DIR = process.env.QA_ARTIFACTS_DIR || path.join(process.cwd(), 'artifacts');
@@ -738,9 +739,13 @@ async function establishVerifiedTokenSession({ page, token, mobileRun }) {
   return { authorized: probe.authorized, probe };
 }
 
-test('Log In flow: auth request is handled correctly', async ({ page }, testInfo) => {
+test('Log In flow: auth request is handled correctly', async ({ browser }, testInfo) => {
   const mobileRun = isMobileProjectRun(testInfo);
   test.setTimeout(mobileRun ? 150000 : 180000);
+  // Login must start as a guest even when the matrix run supplies a shared
+  // authorized storage state for downstream account and casino checks.
+  const context = await browser.newContext(resolveMatrixContextOptions());
+  const page = await context.newPage();
   const wafProbe = createWafProbe(page);
   const authResponses = [];
   const localArtifactCreds = getCredsFromStableArtifact();
@@ -1492,6 +1497,30 @@ test('Log In flow: auth request is handled correctly', async ({ page }, testInfo
       }
 
       const statuses = authResponses.map((resp) => resp.status).join(', ') || 'none';
+      const invalidCredentialsResponse = authResponses.find((resp) => {
+        if (![400, 401, 422].includes(Number(resp.status))) return false;
+        const body = resp.body && typeof resp.body === 'object' ? resp.body : {};
+        return (
+          /CREDENTIALS_NOT_VALID|WRONG_PASSWORD/i.test(String(body.errorCode || body.code || '')) ||
+          /wrong login|wrong password|credentials.*not valid/i.test(
+            String(body.errorMessage || body.message || '')
+          )
+        );
+      });
+      if (hasRealCreds && invalidCredentialsResponse) {
+        const reason =
+          'Stored player credentials are invalid or stale; password login cannot be evaluated as a product failure.';
+        loginOutcome.status = 'blocked-test-data';
+        loginOutcome.reason = reason;
+        markBlocked(testInfo, reason);
+        updatePlayerLoginValidation({
+          creds,
+          status: 'signin-invalid-test-credentials',
+          method: 'ui-signin',
+          reason,
+        });
+        return;
+      }
       expect(
         successAuth,
         `Expected successful login API response (2xx). Captured statuses: ${statuses}`
@@ -1620,5 +1649,9 @@ test('Log In flow: auth request is handled correctly', async ({ page }, testInfo
       body: JSON.stringify(loginOutcome, null, 2),
       contentType: 'application/json',
     });
+    await Promise.race([
+      context.close().catch(() => null),
+      new Promise((resolve) => setTimeout(resolve, 5000)),
+    ]);
   }
 });

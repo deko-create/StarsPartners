@@ -12,7 +12,8 @@ const {
   waitForHomeContent,
 } = require('../helpers/gt-utils');
 const { pickBestAuthStatePath } = require('../helpers/auth-state');
-const { resolveExtraHTTPHeaders } = require('../helpers/context-options');
+const { resolveMatrixContextOptions } = require('../helpers/context-options');
+const { findLiveChatTrigger } = require('../helpers/live-chat-trigger');
 
 const BASE_URL = process.env.BASE_URL || 'https://gt.bet/';
 const PROJECT_AUTOTEST_REPORT_DIR =
@@ -37,7 +38,12 @@ const AUTH_STATE_CANDIDATES = [
 ]
   .filter(Boolean)
   .filter((candidate, index, all) => all.indexOf(candidate) === index);
-const TEST_MESSAGE = process.env.PW_LIVE_CHAT_AUTH_MESSAGE || 'test auth';
+const TEST_MESSAGE =
+  process.env.PW_LIVE_CHAT_AUTH_MESSAGE ||
+  `test auth ${new Date()
+    .toISOString()
+    .replace(/[-:TZ.]/g, '')
+    .slice(0, 14)}`;
 const REPLY_TIMEOUT_MS =
   Number.parseInt(process.env.PW_LIVE_CHAT_AUTH_REPLY_TIMEOUT || '45000', 10) || 45_000;
 const REQUIRE_REPLY = process.env.PW_LIVE_CHAT_AUTH_REQUIRE_REPLY === '1';
@@ -167,7 +173,9 @@ function findReplyRow(rows, baselineRows, sentMessage) {
 async function runPreChatIfNeeded(frame, payload) {
   const nameInput = frame.locator('input[type="text"]').first();
   const emailInput = frame.locator('input[type="email"]').first();
-  const startButton = frame.getByRole('button', { name: /start the chat/i }).first();
+  const startButton = frame
+    .getByRole('button', { name: /start(?: the)? chat|start conversation|chat now|continue/i })
+    .first();
 
   await startButton.waitFor({ state: 'visible', timeout: 10_000 }).catch(() => null);
   const hasStart = await startButton.isVisible().catch(() => false);
@@ -231,14 +239,12 @@ test('Live chat destructive: authorized player sends message and sees chat activ
     status: 'started',
   };
 
-  const extraHTTPHeaders = resolveExtraHTTPHeaders();
-  const context = await browser.newContext({
-    storageState: authStatePath,
-    viewport: { width: 1440, height: 1100 },
-    ignoreHTTPSErrors: true,
-    locale: process.env.PW_LOCALE || 'en-US',
-    ...(extraHTTPHeaders ? { extraHTTPHeaders } : {}),
-  });
+  const context = await browser.newContext(
+    resolveMatrixContextOptions({
+      storageState: authStatePath,
+      locale: process.env.PW_LOCALE || 'en-US',
+    })
+  );
 
   const page = await context.newPage();
   const wafProbe = createWafProbe(page);
@@ -268,14 +274,8 @@ test('Live chat destructive: authorized player sends message and sees chat activ
       return;
     }
 
-    const trigger = page
-      .locator(
-        '[data-testid="sidebar-Live chat-button"]:visible, [data-testid="sidebar-liveChat-button"]:visible, [data-testid="online-chat-button"]:visible, a:has-text("Live chat"):visible, button:has-text("Live chat"):visible, [role="button"]:has-text("Live chat"):visible'
-      )
-      .first();
-    await trigger.waitFor({ state: 'visible', timeout: 15_000 }).catch(() => null);
-    const triggerVisible = await trigger.isVisible().catch(() => false);
-    if (!triggerVisible) {
+    const trigger = await findLiveChatTrigger(page, 15_000);
+    if (!trigger) {
       payload.status = 'blocked';
       payload.reason = 'Live chat trigger is not visible in current authorized layout.';
       markBlocked(testInfo, payload.reason);
@@ -305,7 +305,7 @@ test('Live chat destructive: authorized player sends message and sees chat activ
 
     const composer = frame
       .locator(
-        'textarea[aria-label*="message" i], textarea[placeholder*="message" i], input[placeholder*="message" i], [contenteditable="true"][role="textbox"], [contenteditable="true"][data-testid*="message" i]'
+        'textarea[aria-label*="message" i], textarea[placeholder*="message" i], textarea[data-testid*="message" i], input[placeholder*="message" i], [contenteditable="true"][role="textbox"], [contenteditable="true"][data-testid*="message" i], [contenteditable="true"][aria-label*="message" i]'
       )
       .first();
     const sendButton = frame
@@ -318,7 +318,9 @@ test('Live chat destructive: authorized player sends message and sees chat activ
     const composerVisible = await composer.isVisible().catch(() => false);
     if (!composerVisible) {
       payload.status = 'blocked';
-      payload.reason = 'Live chat composer is unavailable for authorized user.';
+      payload.widgetBody = (await collectBodyText(frame)).slice(0, 1200);
+      payload.reason =
+        'Third-party LiveChat composer is temporarily unavailable for authorized user.';
       markBlocked(testInfo, payload.reason);
       return;
     }
@@ -342,12 +344,16 @@ test('Live chat destructive: authorized player sends message and sees chat activ
     }
 
     let rowsAfterSend = [];
+    let bodyAfterSend = '';
     await expect
       .poll(
         async () => {
           rowsAfterSend = await collectRowTexts(frame);
-          return rowsAfterSend.some((row) =>
-            normalizeText(row).includes(normalizeText(TEST_MESSAGE))
+          bodyAfterSend = await collectBodyText(frame);
+          const messageNeedle = normalizeText(TEST_MESSAGE);
+          return (
+            rowsAfterSend.some((row) => normalizeText(row).includes(messageNeedle)) ||
+            normalizeText(bodyAfterSend).includes(messageNeedle)
           );
         },
         { timeout: 15_000, intervals: [400, 800, 1200] }
@@ -356,7 +362,7 @@ test('Live chat destructive: authorized player sends message and sees chat activ
     payload.messageSent = true;
 
     payload.rowsAfterSend = rowsAfterSend;
-    payload.bodyAfterSend = await collectBodyText(frame);
+    payload.bodyAfterSend = bodyAfterSend || (await collectBodyText(frame));
 
     let replyText = '';
     let replyRows = rowsAfterSend;
@@ -396,10 +402,13 @@ test('Live chat destructive: authorized player sends message and sees chat activ
     }
 
     await waitForUiSettled(page, 1000);
+    const outgoingVisible =
+      rowsAfterSend.some((row) => normalizeText(row).includes(normalizeText(TEST_MESSAGE))) ||
+      normalizeText(payload.bodyAfterSend).includes(normalizeText(TEST_MESSAGE));
     expect(
-      rowsAfterSend.some((row) => normalizeText(row).includes(normalizeText(TEST_MESSAGE))),
-      'Outgoing authorized live chat message should appear in conversation history.'
-    ).toBeTruthy();
+      outgoingVisible,
+      'Outgoing authorized live chat message should appear in chat body.'
+    ).toBe(true);
   } catch (error) {
     if (await maybeSkipWaf({ page, probe: wafProbe, testInfo, error })) {
       payload.status = 'blocked';

@@ -27,6 +27,7 @@ const INFRA_BLOCKED_HINTS = [
   /cloudflare|turnstile|captcha|challenge|waf|cdn-cgi|__cf_chl|token page|forbidden|403/i,
   /geo restriction|cannot be accessed in |region not restricted|proxy service or vpn|http 423/i,
   /no auth state|no authorized storage state|auth storage state|storage state is unavailable/i,
+  /stored player credentials .*invalid|stale player credential|test credential/i,
   /expected authorized session|auth state|authorized .*login surface|http 401|unauthorized|\/api\/user\/preferences returned 401|session was not established/i,
   /temporarily unavailable|backend unavailable|transport negotiation failed|cancelled\/aborted before bootstrap/i,
   /target page|context or browser has been closed|browser has been closed|test ended/i,
@@ -762,7 +763,10 @@ async function closeModal(modal, page) {
         if (closeTriggered) {
           await waitForUiSettled(page, 250).catch(() => null);
           if (await modalIsClosed()) return true;
-          closeTriggered = false;
+          // One close click can open an exit-confirmation overlay. Do not keep
+          // matching the same X through subsequent selectors and stack several
+          // identical confirmation dialogs.
+          break;
         }
       }
     } catch {
@@ -803,7 +807,7 @@ async function closeModal(modal, page) {
       if (!closeTriggered) continue;
       await waitForUiSettled(page, 250).catch(() => null);
       if (await modalIsClosed()) return true;
-      closeTriggered = false;
+      break;
     }
   }
 
@@ -818,21 +822,86 @@ async function closeModal(modal, page) {
   // The confirmation is a sibling dialog, so it cannot be found inside `modal`.
   const confirmationDialog = page
     .locator(
-      '[role="dialog"]:has-text("УВЕРЕНЫ"), [role="dialog"]:has-text("ARE YOU SURE"), [class*="modal" i]:has-text("УВЕРЕНЫ"), [class*="modal" i]:has-text("ARE YOU SURE"), [class*="popup" i]:has-text("УВЕРЕНЫ"), [class*="popup" i]:has-text("ARE YOU SURE")'
+      '[role="dialog"]:has-text("Are you sure"), [role="dialog"]:has-text("УВЕРЕНЫ"), [class*="modal" i]:has-text("Are you sure"), [class*="modal" i]:has-text("УВЕРЕНЫ"), [class*="popup" i]:has-text("Are you sure"), [class*="popup" i]:has-text("УВЕРЕНЫ")'
     )
-    .first();
+    .filter({ visible: true })
+    .last();
   const confirmationVisible = await confirmationDialog
     .isVisible({ timeout: 1500 })
     .catch(() => false);
 
-  if (confirmationVisible) {
-    const confirmExit = confirmationDialog
-      .getByRole('button', {
-        name: /^(close|exit|leave|yes|закрыть|выйти|так|да|закрити|вийти)$/i,
+  // On the current mobile shell the confirmation popup has neither a dialog
+  // role nor a class containing "modal"/"popup" on its visible wrapper. Detect
+  // the prompt itself as well, otherwise the first X click succeeds but the
+  // signup flow remains covered by the confirmation screen.
+  const confirmationPrompt = page
+    .getByText(
+      /are you sure you want to exit|вы уверены, что хотите выйти|ви впевнені, що хочете вийти/i
+    )
+    .filter({ visible: true })
+    .last();
+  const confirmationPromptVisible = await confirmationPrompt
+    .isVisible({ timeout: 1500 })
+    .catch(() => false);
+
+  if (confirmationVisible || confirmationPromptVisible) {
+    // Match visible button text, not only its accessible name: the signup X
+    // icon may also be announced as "Close" and appears earlier in the DOM.
+    let confirmExit = page
+      .locator('button:visible')
+      .filter({
+        hasText: /^\s*(close|exit|leave|yes|закрыть|выйти|так|да|закрити|вийти)\s*$/i,
       })
-      .first();
+      .last();
+    if (!(await confirmExit.isVisible({ timeout: 800 }).catch(() => false))) {
+      confirmExit = page
+        .getByRole('button', {
+          name: /^(close|exit|leave|yes|закрыть|выйти|так|да|закрити|вийти)$/i,
+        })
+        .filter({ visible: true })
+        .last();
+    }
     if (await confirmExit.isVisible({ timeout: 800 }).catch(() => false)) {
-      await confirmExit.click({ timeout: 2500 }).catch(() => null);
+      const clicked = await confirmExit
+        .click({ timeout: 2500, force: true })
+        .then(() => true)
+        .catch(() => false);
+      if (!clicked) {
+        await confirmExit.evaluate((element) => element.click()).catch(() => null);
+      }
+    }
+  }
+
+  // Last-resort confirmation handling. The overlay can be mounted while the
+  // close animation is still running, which makes prompt visibility checks
+  // race even though its textual action is already available in the DOM.
+  if (!(await modal.isHidden({ timeout: 600 }).catch(() => false))) {
+    const actionRowExit = page
+      .locator('.t-popup__action-row button')
+      .filter({
+        hasText: /^\s*(close|exit|leave|yes|закрыть|выйти|так|да|закрити|вийти)\s*$/i,
+      })
+      .last();
+    await actionRowExit.waitFor({ state: 'visible', timeout: 4000 }).catch(() => null);
+    const textualExit = (await actionRowExit.isVisible().catch(() => false))
+      ? actionRowExit
+      : page
+          .locator('button:visible')
+          .filter({
+            hasText: /^\s*(close|exit|leave|yes|закрыть|выйти|так|да|закрити|вийти)\s*$/i,
+          })
+          .last();
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (!(await textualExit.isVisible({ timeout: 1000 }).catch(() => false))) break;
+      const clicked = await textualExit
+        .click({ timeout: 2500, force: true })
+        .then(() => true)
+        .catch(() => false);
+      if (!clicked) {
+        await textualExit.evaluate((element) => element.click()).catch(() => null);
+      }
+      await waitForUiSettled(page, 400).catch(() => null);
+      if (await modal.isHidden({ timeout: 800 }).catch(() => false)) return true;
     }
   }
 

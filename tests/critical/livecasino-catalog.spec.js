@@ -671,16 +671,38 @@ async function collectLiveCards(page) {
         )
           .replace(/\s+/g, ' ')
           .trim();
-        const provider = (node.querySelector('.t-game-item__hover-provider')?.textContent || '')
+        const href = node.querySelector('a[href]')?.getAttribute('href') || '';
+        const routeParts = href.split('?')[0].split('/').filter(Boolean);
+        const routeProvider = routeParts.length >= 3 ? routeParts.at(-2) : '';
+        const provider = (
+          node.querySelector('.t-game-item__hover-provider')?.textContent ||
+          node.getAttribute('data-provider') ||
+          node.querySelector('[data-provider]')?.getAttribute('data-provider') ||
+          routeProvider ||
+          ''
+        )
           .replace(/\s+/g, ' ')
           .trim();
         if (!title) continue;
 
-        out.push({ title, provider, providerExposed: Boolean(provider) });
+        out.push({ title, provider, href, providerExposed: Boolean(provider) });
       }
       return out;
     })
     .catch(() => []);
+}
+
+async function collectLiveCardsWithRetry(page, timeoutMs = 20_000) {
+  const startedAt = Date.now();
+  let cards = [];
+  while (Date.now() - startedAt < timeoutMs) {
+    cards = await collectLiveCards(page);
+    if (cards.length > 0) return cards;
+    await waitForLiveCasinoContent(page).catch(() => null);
+    await ensureInteractive(page).catch(() => null);
+    await sleep(700);
+  }
+  return cards;
 }
 
 async function launchCardByProviderAndTitle(context, page, provider, title, options = {}) {
@@ -751,6 +773,19 @@ async function launchCardByProviderAndTitle(context, page, provider, title, opti
     });
   } else {
     await target.click({ timeout: clickTimeoutMs }).catch(() => null);
+    // Mobile cards use a two-step interaction: the first tap reveals the
+    // overlay and the second tap on Play starts the game.
+    await waitForUiSettled(page, 350);
+    const revealedPlayButton = target
+      .locator(
+        'button:has-text("Play"), [role="button"]:has-text("Play"), .t-game-play__button, .t-game-item__hover-play button'
+      )
+      .first();
+    if (await revealedPlayButton.isVisible({ timeout: 1500 }).catch(() => false)) {
+      await revealedPlayButton
+        .click({ timeout: clickTimeoutMs })
+        .catch(() => revealedPlayButton.click({ timeout: 3000, force: true }).catch(() => null));
+    }
   }
 
   const popup = await popupPromise;
@@ -948,8 +983,8 @@ test.describe('Live Casino Coverage: search/filter interactions', () => {
         await closeLiveFilterPanel(page, filter.panel);
         await ensureInteractive(page);
 
-        const cards = await collectLiveCards(page);
-        const pick = cards.find((item) => item.provider && item.title);
+        const cards = await collectLiveCardsWithRetry(page);
+        const pick = cards.find((item) => item.title);
         if (!pick) {
           const reason = 'Combined flow: no live game cards available for launch.';
           markBlocked(testInfo, reason);
@@ -991,11 +1026,35 @@ test.describe('Live Casino Coverage: search/filter interactions', () => {
       testInfo,
       testName,
       async ({ context, page, route, authStatePath }) => {
-        const cards = await collectLiveCards(page);
+        let cards = await collectLiveCardsWithRetry(page);
+        let catalogWarmup = null;
+        if (!cards.length) {
+          // On the mobile shell the initial /livecasino response can render
+          // controls before hydrating cards. Search/filter interaction wakes
+          // the same catalog store used by the successful combined scenario.
+          const search = await openLiveSearch(page);
+          if (search.opened && search.inputVisible && search.input) {
+            await enterSearchQuery(search.input, 'roulette').catch(() => null);
+            await waitForUiSettled(page, 900);
+            await closeLiveSearchModal(page);
+          }
+          const filter = await openLiveFilterPanel(page);
+          if (filter.opened && filter.panel) {
+            await activateProvidersTab(filter.panel).catch(() => false);
+            await closeLiveFilterPanel(page, filter.panel);
+          }
+          await ensureInteractive(page).catch(() => null);
+          cards = await collectLiveCardsWithRetry(page, 15_000);
+          catalogWarmup = {
+            searchOpened: Boolean(search.opened),
+            filterOpened: Boolean(filter.opened),
+            cardsAfterWarmup: cards.length,
+          };
+        }
         const unique = [];
         const seen = new Set();
         for (const card of cards) {
-          const key = `${card.provider}::${card.title}`.toLowerCase();
+          const key = `${card.provider || card.href || 'unknown'}::${card.title}`.toLowerCase();
           if (seen.has(key)) continue;
           seen.add(key);
           unique.push(card);
@@ -1012,6 +1071,7 @@ test.describe('Live Casino Coverage: search/filter interactions', () => {
             authStatePath,
             liveGamesTarget: LIVE_GAMES_TARGET,
             liveGamesMin: LIVE_GAMES_MIN,
+            catalogWarmup,
           });
           return;
         }
@@ -1063,6 +1123,7 @@ test.describe('Live Casino Coverage: search/filter interactions', () => {
             liveGamesMin: LIVE_GAMES_MIN,
             passed,
             launches,
+            catalogWarmup,
           });
           return;
         }
@@ -1075,6 +1136,7 @@ test.describe('Live Casino Coverage: search/filter interactions', () => {
           liveGamesMin: LIVE_GAMES_MIN,
           passed,
           launches,
+          catalogWarmup,
         });
       }
     );

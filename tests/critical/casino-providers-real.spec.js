@@ -14,6 +14,7 @@ const { createRegistrationData } = require('../helpers/registration-data');
 const { applyAuthTokenCookie, registerPlayerViaApi } = require('../helpers/signup-api-fallback');
 const { serializeArtifactPayload } = require('../helpers/artifact-output');
 const { resolveMatrixContextOptions } = require('../helpers/context-options');
+const { canonicalProviderName, providerNamesMatch } = require('../helpers/provider-names');
 
 const BASE_URL = process.env.BASE_URL || 'https://gt.bet/';
 const BASE_ORIGIN = new URL(BASE_URL).origin;
@@ -210,6 +211,7 @@ let cachedProviderDemoAvailability = new Map();
 let providerMatrixResults = [];
 let providerHistoryLaunchCandidates = [];
 let cachedApiProviderMetadata = null;
+const cachedProviderGameKeys = new Map();
 let providerFastFailActive = PROVIDER_FAST_FAIL_PRESET;
 let providerFastFailReason = PROVIDER_FAST_FAIL_PRESET
   ? 'Provider real-launch checks were short-circuited due to upstream Cloudflare/WAF block.'
@@ -580,12 +582,7 @@ function escapeRegExp(value) {
 }
 
 function normalizeProviderName(value) {
-  const normalized = String(value || '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return normalized === 'true lab' ? 'true labs' : normalized;
+  return canonicalProviderName(value);
 }
 
 function isBaseBrandHost(hostname) {
@@ -609,22 +606,6 @@ function providerNameKey(value) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '');
   return key === 'truelab' ? 'truelabs' : key;
-}
-
-function providerNamesMatch(left, right) {
-  const leftKey = providerNameKey(left);
-  const rightKey = providerNameKey(right);
-  if (!leftKey || !rightKey) return false;
-  if (leftKey === rightKey) return true;
-
-  const normalizedLeft = normalizeProviderName(left);
-  const normalizedRight = normalizeProviderName(right);
-  if (!normalizedLeft || !normalizedRight) return false;
-  return (
-    normalizedLeft === normalizedRight ||
-    normalizedLeft.includes(normalizedRight) ||
-    normalizedRight.includes(normalizedLeft)
-  );
 }
 
 function markProviderAnnotation(testInfo, type, description) {
@@ -1477,20 +1458,12 @@ async function filterPanelClear(panel) {
   let toggled = 0;
   for (const scope of scopes) {
     const rows = scope.locator(
-      '.t-games-filters-block.providers .t-games-select__checkbox .t-checkbox, .t-games-filters-block.providers .t-checkbox, .t-games-select__checkbox .t-checkbox'
+      '.t-games-filters-block.providers .t-checkbox.t-checkbox_checked, .t-games-filters-block.providers input[type="checkbox"]:checked, .t-games-filters-block.providers [role="checkbox"][aria-checked="true"]'
     );
-    const count = Math.min(await rows.count().catch(() => 0), 250);
+    const count = Math.min(await rows.count().catch(() => 0), 20);
     for (let i = 0; i < count; i += 1) {
       const row = rows.nth(i);
       if (!(await row.isVisible().catch(() => false))) continue;
-      const checked = await row
-        .evaluate((node) => {
-          const classChecked = /\bt-checkbox_checked\b/i.test(String(node.className || ''));
-          const input = node.querySelector('input[type="checkbox"]');
-          return classChecked || Boolean(input && input.checked);
-        })
-        .catch(() => false);
-      if (!checked) continue;
       await row.click({ timeout: 5000 }).catch(() => null);
       toggled += 1;
       await waitForUiSettled(panel.page(), 200);
@@ -2995,6 +2968,9 @@ async function findRealPlayButton(page, options = {}) {
     options.providerEntries && Array.isArray(options.providerEntries)
       ? options.providerEntries
       : getKnownProvidersForMatching();
+  const expectedMobileGameKeys = expectedProvider
+    ? await getExpectedProviderGameKeys(page, expectedProvider).catch(() => new Set())
+    : new Set();
   const cardSelectors = [
     '.t-games-catalog .t-game-play',
     '.t-games-catalog .t-game-item',
@@ -3074,7 +3050,7 @@ async function findRealPlayButton(page, options = {}) {
             expectedProvider,
             providerEntries
           )
-        : cardMeta.mobileCard;
+        : cardMeta.mobileCard && expectedMobileGameKeys.has(normalizeLoose(cardTitle));
       if (!providerMatched) continue;
       providerMatchedCards += 1;
     }
@@ -3094,13 +3070,10 @@ async function findRealPlayButton(page, options = {}) {
         : card.locator('a[href], [role="link"]').first();
       if (await cardAction.isVisible().catch(() => false)) button = cardAction;
     }
-    if (!button) {
-      const directCardAction = card.locator('a[href], button, [role="button"]').first();
-      if (await directCardAction.isVisible().catch(() => false)) button = directCardAction;
-    }
     if (!button && cardMeta.mobileCard) {
       // The first mobile tap only reveals the action layer. Resolve the Play
-      // link after activation instead of misclassifying the card as Play.
+      // link after activation before considering generic nested buttons. The
+      // latter can be a card activator and does not launch the selected game.
       const imageSurface = card.locator('.t-game-item__img').first();
       const activationTarget = (await imageSurface.isVisible().catch(() => false))
         ? imageSurface
@@ -3114,6 +3087,10 @@ async function findRealPlayButton(page, options = {}) {
         .filter({ hasText: /^\s*Play\s*$/i })
         .first();
       if (await revealedButton.isVisible().catch(() => false)) button = revealedButton;
+    }
+    if (!button) {
+      const directCardAction = card.locator('a[href], button, [role="button"]').first();
+      if (await directCardAction.isVisible().catch(() => false)) button = directCardAction;
     }
     if (!button) continue;
 
@@ -3790,6 +3767,32 @@ async function collectProviderGamesViaApi(page, providerId, options = {}) {
     apiTotalGames,
     exhausted: true,
   };
+}
+
+async function getExpectedProviderGameKeys(page, provider) {
+  const cacheKey = normalizeProviderName(provider);
+  if (!cacheKey) return new Set();
+  if (cachedProviderGameKeys.has(cacheKey)) return cachedProviderGameKeys.get(cacheKey);
+
+  const metadata = await getApiProviderMetadata(page);
+  const apiProvider = findApiProviderMatch(provider, metadata.providerFilters);
+  const providerId = Number(apiProvider && apiProvider.id);
+  if (!Number.isFinite(providerId) || providerId <= 0) {
+    const empty = new Set();
+    cachedProviderGameKeys.set(cacheKey, empty);
+    return empty;
+  }
+
+  const collected = await collectProviderGamesViaApi(page, providerId, {
+    targetGames: 150,
+    pageLimit: 150,
+    maxPages: 3,
+  });
+  const keys = new Set(
+    collected.games.map((game) => normalizeLoose(game && game.name)).filter(Boolean)
+  );
+  cachedProviderGameKeys.set(cacheKey, keys);
+  return keys;
 }
 
 function findApiProviderMatch(provider, apiProviders) {
