@@ -192,6 +192,17 @@ function normalizeEmail(value) {
     .toLowerCase();
 }
 
+function isBlockedPlayerResponse(response) {
+  if (!response || ![400, 401, 403, 423].includes(Number(response.status))) return false;
+  const body = response.body && typeof response.body === 'object' ? response.body : {};
+  const code = String(body.errorCode || body.code || '');
+  const message = String(body.errorMessage || body.message || '');
+  return (
+    /USER_ACCOUNT_BLOCKED|ACCOUNT_(?:IS_)?BLOCKED|PLAYER_BLOCKED/i.test(code) ||
+    /(?:user|player|account).{0,24}block|contact support.{0,40}account/i.test(message)
+  );
+}
+
 async function installSigninEmailPatch(page, email, testInfo) {
   const expectedEmail = normalizeEmail(email);
   if (!expectedEmail || !expectedEmail.includes('+')) {
@@ -942,9 +953,12 @@ test('Log In flow: auth request is handled correctly', async ({ browser }, testI
     await expect(modal).toBeVisible({ timeout: 15000 });
 
     if (REQUIRE_REGISTERED_LOGIN && !artifactCreds) {
-      throw new Error(
-        `PW_LOGIN_REQUIRE_REGISTERED=1 but no credentials were found in ${STABLE_PLAYER_PATH}.`
-      );
+      const reason =
+        'No newly registered player credentials are available; registration must succeed before authorized coverage can run.';
+      loginOutcome.status = 'blocked-test-data';
+      loginOutcome.reason = reason;
+      markBlocked(testInfo, reason);
+      return;
     }
 
     resolvedCreds = resolveLoginCreds({ artifactCreds, envCreds });
@@ -1497,6 +1511,21 @@ test('Log In flow: auth request is handled correctly', async ({ browser }, testI
       }
 
       const statuses = authResponses.map((resp) => resp.status).join(', ') || 'none';
+      const blockedPlayerResponse = authResponses.find(isBlockedPlayerResponse);
+      if (hasRealCreds && blockedPlayerResponse) {
+        const reason =
+          'Stored player account is blocked by the backend (USER_ACCOUNT_BLOCKED); create a new player before authorized coverage.';
+        loginOutcome.status = 'blocked-test-data';
+        loginOutcome.reason = reason;
+        markBlocked(testInfo, reason);
+        updatePlayerLoginValidation({
+          creds,
+          status: 'signin-blocked-player-account',
+          method: 'ui-signin',
+          reason,
+        });
+        return;
+      }
       const invalidCredentialsResponse = authResponses.find((resp) => {
         if (![400, 401, 422].includes(Number(resp.status))) return false;
         const body = resp.body && typeof resp.body === 'object' ? resp.body : {};

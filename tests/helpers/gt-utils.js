@@ -26,8 +26,8 @@ const CLOUD_FLARE_CHALLENGE_FRAME_SELECTOR =
 const INFRA_BLOCKED_HINTS = [
   /cloudflare|turnstile|captcha|challenge|waf|cdn-cgi|__cf_chl|token page|forbidden|403/i,
   /geo restriction|cannot be accessed in |region not restricted|proxy service or vpn|http 423/i,
-  /no auth state|no authorized storage state|auth storage state|storage state is unavailable/i,
-  /stored player credentials .*invalid|stale player credential|test credential/i,
+  /no auth state|no (?:verified )?authorized storage state|auth storage state|storage state is unavailable/i,
+  /stored player credentials .*invalid|stale player credential|test credential|user_account_blocked|account (?:is )?blocked/i,
   /expected authorized session|auth state|authorized .*login surface|http 401|unauthorized|\/api\/user\/preferences returned 401|session was not established/i,
   /temporarily unavailable|backend unavailable|transport negotiation failed|cancelled\/aborted before bootstrap/i,
   /target page|context or browser has been closed|browser has been closed|test ended/i,

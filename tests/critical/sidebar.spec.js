@@ -280,6 +280,47 @@ function resolveAuthStatePath() {
   return preferred ? preferred.filePath : null;
 }
 
+async function validateAuthorizedState(browser, storageStatePath) {
+  if (!storageStatePath) return false;
+  const context = await browser.newContext(
+    getSidebarContextOptions({ storageState: storageStatePath })
+  );
+  try {
+    const preferences = await context.request
+      .get(new URL('/api/user/preferences', BASE_URL).toString(), {
+        failOnStatusCode: false,
+        timeout: 8000,
+      })
+      .catch(() => null);
+    if (preferences && preferences.status() === 200) return true;
+
+    const page = await context.newPage();
+    await page
+      .goto(new URL('/profile/', BASE_URL).toString(), {
+        waitUntil: 'domcontentloaded',
+        timeout: 15000,
+      })
+      .catch(() => null);
+    if (await detectCloudflare(page).catch(() => null)) return false;
+    const bodyVisible = await page
+      .locator('body')
+      .isVisible({ timeout: 3000 })
+      .catch(() => false);
+    if (!bodyVisible) return false;
+    const loginVisible = await page
+      .getByRole('button', { name: /log in/i })
+      .first()
+      .isVisible({ timeout: 3000 })
+      .catch(() => false);
+    const redirectedToGuestAuth = /#(?:sign-?up|sign-?in|login)|returnTo=.*(?:signup|login)/i.test(
+      page.url()
+    );
+    return !loginVisible && !redirectedToGuestAuth;
+  } finally {
+    await closeContextSafely(context);
+  }
+}
+
 function makeSummary(items) {
   return items
     .map((item) => `${item.label}: ${item.status}${item.reason ? ` (${item.reason})` : ''}`)
@@ -1730,9 +1771,12 @@ function assertMatrixOutcome(results, label, testInfo, options = {}) {
 test.describe('Sidebar Matrix', () => {
   let authStatePath = null;
 
-  test.beforeAll(() => {
+  test.beforeAll(async ({ browser }) => {
     fs.mkdirSync(ARTIFACT_DIR, { recursive: true });
     authStatePath = resolveAuthStatePath();
+    if (authStatePath && !(await validateAuthorizedState(browser, authStatePath))) {
+      authStatePath = null;
+    }
   });
 
   test('P0 Sidebar guest: inventory covers all sidebar items', async ({ browser }, testInfo) => {

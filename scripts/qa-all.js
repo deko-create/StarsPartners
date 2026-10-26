@@ -284,6 +284,8 @@ const registrationChainArtifacts = [
   path.join(projectPaths.artifactsDir, 'profile-auth-state.json'),
   path.join(projectPaths.artifactsDir, 'site-coverage-auth-state.json'),
   path.join(projectPaths.artifactsDir, 'button-sweep-auth-state.json'),
+  path.join(projectPaths.artifactsDir, 'last-manual-login-player.json'),
+  path.join(projectPaths.artifactsDir, 'last-login-candidate.txt'),
 ];
 const qaPathEnv = {
   QA_PROJECT_ROOT: projectPaths.projectRoot,

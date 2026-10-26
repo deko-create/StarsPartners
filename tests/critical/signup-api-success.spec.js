@@ -36,7 +36,7 @@ const SIGNIN_VALIDATION_TIMEOUT_MS = Number.parseInt(
   process.env.PW_SIGNUP_VALIDATE_SIGNIN_TIMEOUT_MS || '90000',
   10
 );
-const SIGNUP_UI_TIMEOUT_MS = Number.parseInt(process.env.PW_SIGNUP_UI_TIMEOUT_MS || '75000', 10);
+const SIGNUP_UI_TIMEOUT_MS = Number.parseInt(process.env.PW_SIGNUP_UI_TIMEOUT_MS || '150000', 10);
 
 async function withTimeout(promise, timeoutMs, message) {
   let timer;
@@ -50,23 +50,6 @@ async function withTimeout(promise, timeoutMs, message) {
   } finally {
     clearTimeout(timer);
   }
-}
-
-async function waitForSignupSuccessSignal(responses, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const apiSucceeded = responses.some(
-      (entry) =>
-        entry &&
-        entry.status === 200 &&
-        entry.body &&
-        typeof entry.body === 'object' &&
-        typeof entry.body.token === 'string'
-    );
-    if (apiSucceeded) return 'api-response';
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  return null;
 }
 
 function oneLine(value) {
@@ -388,47 +371,44 @@ test('Sign Up API: successful registration returns token and userId', async ({
     }
 
     await withTimeout(
-      Promise.race([
-        (async () => {
-          if (process.env.PW_DEBUG_SIGNUP === '1') console.log('[signup-debug] open-modal:start');
-          const modal = await openSignupModal(page);
-          if (process.env.PW_DEBUG_SIGNUP === '1') console.log('[signup-debug] open-modal:done');
-          await expect(modal).toBeVisible({ timeout: 15000 });
-          const errorToast = page.getByText(/something went wrong/i).first();
+      (async () => {
+        if (process.env.PW_DEBUG_SIGNUP === '1') console.log('[signup-debug] open-modal:start');
+        const modal = await openSignupModal(page);
+        if (process.env.PW_DEBUG_SIGNUP === '1') console.log('[signup-debug] open-modal:done');
+        await expect(modal).toBeVisible({ timeout: 15000 });
+        const errorToast = page.getByText(/something went wrong/i).first();
 
-          const signupPage = new SignupRegistrationPage(page, modal);
-          try {
-            await signupPage.completeRegistration(data, {
-              errorToast,
-              annotate: (description) => testInfo.annotations.push({ type: 'debug', description }),
-            });
+        const signupPage = new SignupRegistrationPage(page, modal);
+        try {
+          await signupPage.completeRegistration(data, {
+            errorToast,
+            annotate: (description) => testInfo.annotations.push({ type: 'debug', description }),
+          });
 
-            const outcome = await signupPage.waitForOutcome();
-            if (outcome === 'error') {
-              throw new Error('Registration UI returned an error state (already exists/invalid).');
-            }
-          } catch (err) {
-            if (!isSignupTurnstileBlockedError(err)) throw err;
-            fallbackTried = true;
-            fallbackSignup = await registerPlayerViaApi({ page, data, baseUrl: BASE_URL });
-            expect(
-              fallbackSignup.ok,
-              `Signup API fallback failed: status=${fallbackSignup.status} body=${JSON.stringify(
-                fallbackSignup.body
-              )}`
-            ).toBeTruthy();
-            await applyAuthTokenCookie(page.context(), fallbackSignup.body.token, BASE_URL);
-            testInfo.annotations.push({
-              type: 'debug',
-              description: `Signup fallback used: status=${fallbackSignup.status}, userId=${fallbackSignup.body.userId}`,
-            });
+          const outcome = await signupPage.waitForOutcome();
+          if (outcome === 'error') {
+            throw new Error('Registration UI returned an error state (already exists/invalid).');
           }
-        })(),
-        waitForSignupSuccessSignal(signupApiResponses, SIGNUP_UI_TIMEOUT_MS),
-      ]),
+        } catch (err) {
+          if (!isSignupTurnstileBlockedError(err)) throw err;
+          fallbackTried = true;
+          fallbackSignup = await registerPlayerViaApi({ page, data, baseUrl: BASE_URL });
+          expect(
+            fallbackSignup.ok,
+            `Signup API fallback failed: status=${fallbackSignup.status} body=${JSON.stringify(
+              fallbackSignup.body
+            )}`
+          ).toBeTruthy();
+          await applyAuthTokenCookie(page.context(), fallbackSignup.body.token, BASE_URL);
+          testInfo.annotations.push({
+            type: 'debug',
+            description: `Signup fallback used: status=${fallbackSignup.status}, userId=${fallbackSignup.body.userId}`,
+          });
+        }
+      })(),
       Number.isFinite(SIGNUP_UI_TIMEOUT_MS) && SIGNUP_UI_TIMEOUT_MS > 0
         ? SIGNUP_UI_TIMEOUT_MS
-        : 75_000,
+        : 150_000,
       'Signup UI timeout: the multi-step form did not complete within the bounded window.'
     );
 

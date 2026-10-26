@@ -85,8 +85,8 @@ class SignupRegistrationPage {
       for (let index = 0; index < count; index += 1) {
         const input = inputs.nth(index);
         try {
-          if (await input.isVisible()) {
-            await input.fill(value);
+          if (await input.isVisible({ timeout: 350 })) {
+            await input.fill(value, { timeout: 3000 });
             return true;
           }
         } catch {
@@ -105,7 +105,7 @@ class SignupRegistrationPage {
       for (let index = 0; index < count; index += 1) {
         const btn = buttons.nth(index);
         try {
-          if (await btn.isVisible()) {
+          if (await btn.isVisible({ timeout: 350 })) {
             return btn;
           }
         } catch {
@@ -145,8 +145,8 @@ class SignupRegistrationPage {
     for (const selector of requiredCheckboxCandidates) {
       const checkbox = container.locator(selector).first();
       try {
-        if (await checkbox.isVisible()) {
-          await checkbox.click();
+        if (await checkbox.isVisible({ timeout: 350 })) {
+          await checkbox.click({ timeout: 3000 });
           return;
         }
       } catch {
@@ -165,8 +165,8 @@ class SignupRegistrationPage {
     for (const selector of labelCandidates) {
       const label = container.locator(selector).first();
       try {
-        if (await label.isVisible()) {
-          await label.click();
+        if (await label.isVisible({ timeout: 350 })) {
+          await label.click({ timeout: 3000 });
           return;
         }
       } catch {
@@ -180,7 +180,7 @@ class SignupRegistrationPage {
           '[data-testid="years-checkbox"] input[type="checkbox"], .t-signup__checkbox_years input[type="checkbox"]'
         )
         .first();
-      if (await checkbox.isVisible()) {
+      if (await checkbox.isVisible({ timeout: 350 })) {
         const checked = await checkbox.isChecked().catch(() => false);
         if (!checked) {
           await checkbox.click({ force: true });
@@ -490,7 +490,7 @@ class SignupRegistrationPage {
     };
 
     const clickOptionCandidate = async (candidate) => {
-      const visible = await candidate.isVisible().catch(() => false);
+      const visible = await candidate.isVisible({ timeout: 500 }).catch(() => false);
       if (!visible) return false;
 
       await candidate.scrollIntoViewIfNeeded().catch(() => null);
@@ -549,7 +549,7 @@ class SignupRegistrationPage {
 
       for (let i = 0; i < count; i += 1) {
         const candidate = candidates.nth(i);
-        const visible = await candidate.isVisible().catch(() => false);
+        const visible = await candidate.isVisible({ timeout: 500 }).catch(() => false);
         if (!visible) continue;
 
         const box = await candidate.boundingBox().catch(() => null);
@@ -621,7 +621,7 @@ class SignupRegistrationPage {
 
       for (let i = 0; i < count; i += 1) {
         const candidate = textCandidates.nth(i);
-        const visible = await candidate.isVisible().catch(() => false);
+        const visible = await candidate.isVisible({ timeout: 500 }).catch(() => false);
         if (!visible) continue;
 
         const box = await candidate.boundingBox().catch(() => null);
@@ -668,11 +668,11 @@ class SignupRegistrationPage {
       .locator('button:has-text("Female"), [role="button"]:has-text("Female")')
       .first();
     try {
-      if (await male.isVisible().catch(() => false)) {
+      if (await male.isVisible({ timeout: 500 }).catch(() => false)) {
         await male.click();
         return true;
       }
-      if (await female.isVisible().catch(() => false)) {
+      if (await female.isVisible({ timeout: 500 }).catch(() => false)) {
         await female.click();
         return true;
       }
@@ -727,14 +727,14 @@ class SignupRegistrationPage {
   async selectDobFromDropdowns(data) {
     const container = this.getContainer();
     const dobLabel = container.locator('text=Day of Birth').first();
-    const dobBlock = (await dobLabel.isVisible().catch(() => false))
+    const dobBlock = (await dobLabel.isVisible({ timeout: 500 }).catch(() => false))
       ? dobLabel.locator('..')
       : container;
 
     const pickVisibleTrigger = async (selectors) => {
       for (const selector of selectors) {
         const candidate = dobBlock.locator(selector).first();
-        if (await candidate.isVisible().catch(() => false)) return candidate;
+        if (await candidate.isVisible({ timeout: 500 }).catch(() => false)) return candidate;
       }
       return dobBlock.locator(selectors[0]).first();
     };
@@ -911,7 +911,10 @@ class SignupRegistrationPage {
       )
       .first();
     try {
-      if ((await signupTab.isVisible()) && (await signupTab.isEnabled())) {
+      if (
+        (await signupTab.isVisible({ timeout: 500 })) &&
+        (await signupTab.isEnabled({ timeout: 500 }))
+      ) {
         await signupTab.click({ timeout: 3000 });
       }
     } catch {
@@ -963,7 +966,7 @@ class SignupRegistrationPage {
     debugSignup(`fillStep1:email=${String(emailFilled)}`);
     if (!emailFilled) {
       const emailFallback = container.locator('input:visible:not([type="password"])').first();
-      if (await emailFallback.isVisible().catch(() => false)) {
+      if (await emailFallback.isVisible({ timeout: 500 }).catch(() => false)) {
         await emailFallback.fill(data.email);
         emailFilled = true;
       }
@@ -996,7 +999,7 @@ class SignupRegistrationPage {
         'input[type="tel"]:visible, input[name="phone"]:visible, input[placeholder*="Phone" i]:visible'
       )
       .first()
-      .press('Tab')
+      .press('Tab', { timeout: 500 })
       .catch(() => null);
     debugSignup('fillStep1:phone-blurred');
 
@@ -1008,7 +1011,7 @@ class SignupRegistrationPage {
     let step1Btn = await this.findActionButton(stepSelectors);
     if (!step1Btn && signupTab) {
       try {
-        if (await signupTab.isVisible()) {
+        if (await signupTab.isVisible({ timeout: 500 })) {
           await signupTab.click();
           await sleep(500);
           step1Btn = await this.findActionButton(stepSelectors);
@@ -1026,7 +1029,7 @@ class SignupRegistrationPage {
       }
       const visibleButtons = await this.listVisibleButtons();
       this.addNote(annotate, `Step 1 buttons: ${visibleButtons.join(' | ') || 'none'}`);
-      if (errorToast && (await errorToast.isVisible().catch(() => false))) {
+      if (errorToast && (await errorToast.isVisible({ timeout: 500 }).catch(() => false))) {
         throw new Error('Registration error toast: Something went wrong, please try again later.');
       }
     }
@@ -1061,8 +1064,8 @@ class SignupRegistrationPage {
           );
           passwordFilled = true;
         }
-        await emailInput.press('Tab').catch(() => null);
-        await passwordInput.press('Tab').catch(() => null);
+        await emailInput.press('Tab', { timeout: 1000 }).catch(() => null);
+        await passwordInput.press('Tab', { timeout: 1000 }).catch(() => null);
         await sleep(500);
         await this.acceptTermsIfPresent();
 
@@ -1071,11 +1074,11 @@ class SignupRegistrationPage {
             'input[type="tel"]:visible, input[name="phone"]:visible, input[placeholder*="Phone" i]:visible'
           )
           .first();
-        if (await phoneInput.isVisible().catch(() => false)) {
+        if (await phoneInput.isVisible({ timeout: 500 }).catch(() => false)) {
           const phoneDigits = String(data.phone || '').replace(/\D+/g, '');
           if (phoneDigits.length > 9) {
             await phoneInput.fill(phoneDigits.slice(-9));
-            await phoneInput.press('Tab').catch(() => null);
+            await phoneInput.press('Tab', { timeout: 1000 }).catch(() => null);
             await sleep(500);
             this.addNote(annotate, 'Adjusted visible phone input to a 9-digit national number.');
           }
@@ -1207,7 +1210,7 @@ class SignupRegistrationPage {
       if (emptyInputs.length) {
         this.addNote(annotate, `Step 2 empty inputs: ${emptyInputs.join(' | ')}`);
       }
-      if (errorToast && (await errorToast.isVisible().catch(() => false))) {
+      if (errorToast && (await errorToast.isVisible({ timeout: 500 }).catch(() => false))) {
         throw new Error('Registration error toast: Something went wrong, please try again later.');
       }
     }
@@ -1273,7 +1276,7 @@ class SignupRegistrationPage {
     if (!finalSignupBtn) {
       const visibleButtons = await this.listVisibleButtons();
       this.addNote(annotate, `Final step buttons: ${visibleButtons.join(' | ') || 'none'}`);
-      if (errorToast && (await errorToast.isVisible().catch(() => false))) {
+      if (errorToast && (await errorToast.isVisible({ timeout: 500 }).catch(() => false))) {
         throw new Error('Registration error toast: Something went wrong, please try again later.');
       }
     }
