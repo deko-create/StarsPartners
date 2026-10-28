@@ -29,6 +29,24 @@ The runner already supports `PW_EXTRA_HTTP_HEADERS_JSON` and the narrower
 `PW_QA_BYPASS_HEADER_NAME`/`PW_QA_BYPASS_HEADER_VALUE` pair. Use them only after the edge validates
 the corresponding QA identity.
 
+## Registration exit confirmation
+
+The Close action in the signup exit-confirmation layer must dismiss the confirmation and the
+registration flow without immediately reopening either surface. The action needs an accessible
+name, a stable component-owned selector, and must not share the mobile-sidebar toggle handler.
+
+Acceptance: open signup, request exit, activate Close once, and observe that both signup layers are
+hidden, focus returns to the original signup trigger, and the mobile sidebar remains closed.
+
+## Language persistence
+
+Store an explicitly selected locale in the canonical locale cookie/profile preference before the
+route reload. Application bootstrap must read that value before applying the geo/default locale;
+the default may be used only when no valid explicit preference exists.
+
+Acceptance: select French (`fr`), reload the current route twice, and verify the locale trigger,
+document language, translated navigation, cookie, and profile preference all remain French.
+
 ## Sports event return navigation
 
 The event route opens, but neither a semantic Back control nor browser history returns to the
@@ -65,6 +83,17 @@ code first and render a local neutral fallback icon when it is not in the suppor
 
 Acceptance: sports browsing emits no request matching `flags_by_code/(undefined|null|).svg`, and
 events without a country code render a stable fallback without console or ORB errors.
+
+## Recent Games persistence
+
+After an authenticated real-mode launch succeeds, persist the normalized game identity
+(`provider`, `slug`, and immutable game id where available) to the player's recent-history source.
+The `/recent/` response must use the same identity model as the launch endpoint and invalidate its
+cached empty state after a successful launch.
+
+Acceptance: launch `Gtbet Bonsai`, return to `/recent/`, and observe the same Novomatic game within
+three refresh/poll intervals. The card must expose a stable provider/slug or game-id link so the
+result can be matched without title-only heuristics.
 
 ## OpenAPI contract inputs
 

@@ -558,6 +558,7 @@ function runCommand(bin, args, envOverride = {}) {
 
     const child = spawn(bin, args, { env });
     let output = '';
+    let settled = false;
 
     child.stdout.on('data', (chunk) => {
       process.stdout.write(chunk);
@@ -569,7 +570,19 @@ function runCommand(bin, args, envOverride = {}) {
       output += chunk.toString();
     });
 
-    child.on('exit', (code) => resolve({ code, output }));
+    const finish = (code, signal = null) => {
+      if (settled) return;
+      settled = true;
+      resolve({ code: Number(code || (signal ? 1 : 0)), signal, output });
+    };
+    child.on('error', (error) => {
+      output += `\n${String(error && error.stack ? error.stack : error)}`;
+      finish(1);
+    });
+    // `exit` may fire while inherited descendants still own the stdio pipes.
+    // Waiting for `close` prevents the runner from snapshotting stale reports
+    // or starting the next phase while Playwright workers are still writing.
+    child.on('close', finish);
   });
 }
 
@@ -1924,7 +1937,20 @@ async function runSuiteWithRetry({
 
   let attempt = 1;
   const mobileMatrixRun = isMobileMatrix(suitesProjectMatrix);
-  const maxAttempts = mobileMatrixRun ? 4 : 3;
+  const suiteRetryEnvName =
+    executionPhase === 'casino' ? 'PW_CASINO_SUITE_RETRY_MAX' : 'PW_SUITE_RETRY_MAX';
+  const configuredRetryMax = Number.parseInt(
+    String(envOverride[suiteRetryEnvName] ?? process.env[suiteRetryEnvName] ?? ''),
+    10
+  );
+  // Provider tests already retry individual failed providers. Re-running the
+  // complete Casino phase repeats every successful provider and can add hours
+  // while hiding the original deterministic catalog failure.
+  const defaultRetryMax = executionPhase === 'casino' ? 0 : mobileMatrixRun ? 3 : 2;
+  const retryMax = Number.isFinite(configuredRetryMax)
+    ? Math.max(0, configuredRetryMax)
+    : defaultRetryMax;
+  const maxAttempts = 1 + retryMax;
   while (result.code !== 0 && attempt < maxAttempts) {
     const testTimeoutDetected = /Test timeout of \d+ms exceeded/i.test(result.output);
     const shouldRetry =

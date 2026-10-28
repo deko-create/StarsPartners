@@ -325,7 +325,10 @@ function buildRunEnv({ brand, mode, cwd, runProfile }) {
   const useCdpReuse = explicitCdpReuse
     ? explicitCdpReuse === '1'
     : !process.env.CI && DEFAULT_CDP_REUSE_BRANDS.has(brand.key);
-  const cdpProfileMode = useCdpReuse && mode === 'mobile' ? 'desktop' : mode;
+  // Keep desktop and mobile CDP fingerprints isolated. Reusing the desktop
+  // profile for a mobile viewport made provider launch requests advertise
+  // device=DESKTOP and also coupled both modes to the same Cloudflare session.
+  const cdpProfileMode = mode;
   const env = {
     ...process.env,
     BASE_URL: brand.baseUrl,
@@ -566,19 +569,27 @@ function runQaAllForBrand({ brand, mode, cwd, dryRun = false, runProfile = 'full
       stdio: 'inherit',
     });
 
-    child.on('exit', (code) => {
+    let settled = false;
+    const finish = (code, signal = null) => {
+      if (settled) return;
+      settled = true;
       const durationSec = Math.round((Date.now() - startedAt) / 1000);
       updateSharedReportsIndex({ brand, paths });
       const runStatus = readLatestRunStatus(paths);
       resolve({
         brand: brand.slug,
         mode,
-        code: Number(code || 0),
+        code: Number(code || (signal ? 1 : 0)),
+        signal,
         runStatus,
         durationSec,
         reportDir: paths.autotestReportDir,
       });
-    });
+    };
+    child.on('error', () => finish(1));
+    // `close` guarantees that the complete qa-all/CDP process tree released
+    // its inherited streams before indexes and final status are read.
+    child.on('close', finish);
   });
 }
 

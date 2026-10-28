@@ -1,4 +1,4 @@
-const { chromium } = require('playwright');
+const { chromium, devices } = require('playwright');
 
 const CLOUDFLARE_COOKIE_NAMES = new Set([
   'cf_clearance',
@@ -53,7 +53,7 @@ function cleanupStaleProfileLocks(profileDir) {
   try {
     fs.lstatSync(lockPath);
   } catch (error) {
-    if (error && error.code === 'ENOENT') return;
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return;
     throw error;
   }
   let ownerPid = 0;
@@ -71,7 +71,7 @@ function cleanupStaleProfileLocks(profileDir) {
     try {
       fs.unlinkSync(path.join(profileDir, name));
     } catch (error) {
-      if (!error || error.code !== 'ENOENT') throw error;
+      if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
     }
   }
 }
@@ -217,8 +217,29 @@ async function waitForManualChallenge(context, page, baseUrl, timeoutMs) {
 function runChild(command, args, env) {
   return new Promise((resolve) => {
     const child = spawn(command, args, { cwd: process.cwd(), env, stdio: 'inherit' });
-    child.on('exit', (code, signal) => resolve({ code: Number(code || 0), signal }));
+    let settled = false;
+    const finish = (code, signal = null) => {
+      if (settled) return;
+      settled = true;
+      resolve({ code: Number(code || (signal ? 1 : 0)), signal });
+    };
+    child.on('error', () => finish(1));
+    child.on('close', finish);
   });
+}
+
+function resolveLaunchUserAgent() {
+  const explicit = String(process.env.PW_CDP_USER_AGENT || '').trim();
+  if (explicit) return explicit;
+
+  const mode = String(process.env.QA_EXECUTION_MODE || process.env.PW_PROJECT_MATRIX || '')
+    .trim()
+    .toLowerCase();
+  if (mode !== 'mobile' && mode !== 'm') return '';
+
+  const configuredMobile = String(process.env.PW_MOBILE_USER_AGENT || '').trim();
+  if (configuredMobile) return configuredMobile;
+  return String((devices['Pixel 7'] && devices['Pixel 7'].userAgent) || '').trim();
 }
 
 async function saveState(context, page, outPath) {
@@ -274,20 +295,19 @@ async function main() {
   console.log(`Endpoint: ${endpoint}`);
   console.log(`URL: ${baseUrl}`);
 
-  const chrome = spawn(
-    chromeExecutable,
-    [
-      `--remote-debugging-address=127.0.0.1`,
-      `--remote-debugging-port=${port}`,
-      `--user-data-dir=${profileDir}`,
-      '--no-first-run',
-      '--no-default-browser-check',
-      `--window-size=${viewport}`,
-      '--new-window',
-      baseUrl,
-    ],
-    { stdio: 'ignore', detached: false }
-  );
+  const launchUserAgent = resolveLaunchUserAgent();
+  const chromeArgs = [
+    `--remote-debugging-address=127.0.0.1`,
+    `--remote-debugging-port=${port}`,
+    `--user-data-dir=${profileDir}`,
+    '--no-first-run',
+    '--no-default-browser-check',
+    `--window-size=${viewport}`,
+    ...(launchUserAgent ? [`--user-agent=${launchUserAgent}`] : []),
+    '--new-window',
+    baseUrl,
+  ];
+  const chrome = spawn(chromeExecutable, chromeArgs, { stdio: 'ignore', detached: false });
 
   let browser = null;
   try {
@@ -345,15 +365,18 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error && error.stack ? error.stack : String(error));
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error && error.stack ? error.stack : String(error));
+    process.exit(1);
+  });
+}
 
 module.exports = {
   cleanupStaleProfileLocks,
   pageIsReady,
   reservePort,
+  resolveLaunchUserAgent,
   resolveChromeExecutable,
   waitForDevTools,
 };
