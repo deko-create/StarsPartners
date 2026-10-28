@@ -2,6 +2,7 @@
 brew "node@24"
 brew "git"
 brew "gh"
+brew "act"
 
 # Browser automation and container runtime
 brew "colima"
@@ -36,12 +37,14 @@ brew "fzf"
 brew "git-delta"
 brew "gron"
 brew "httpie"
+brew "hurl"
 brew "hyperfine"
 brew "imagemagick"
 brew "jq"
 brew "just"
 brew "lychee"
 brew "markdownlint-cli2"
+brew "allure"
 brew "pipx"
 brew "poppler"
 brew "ripgrep"
@@ -61,7 +64,6 @@ cask "browserstacklocal"
 cask "codex"
 cask "firefox"
 cask "mitmproxy"
-cask "proxyman"
 
 # Python-based API contract testing is isolated with pipx.
 # Bootstrap after `brew bundle` with: pipx install schemathesis

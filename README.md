@@ -142,8 +142,10 @@ npm run qa:tools:install                 # core tools
 bash scripts/tools/install-qa-extras.sh mobile
 bash scripts/tools/install-qa-extras.sh performance
 bash scripts/tools/install-qa-extras.sh dev
-npm run qa:stealth:probe
 npm run qa:dashboard
+npm run qa:allure:test                  # прогон с Allure results
+npm run qa:allure:generate              # собрать статический Allure report
+npm run qa:allure:open                  # открыть собранный Allure report
 npm run qa:all:smoke
 npm run qa:all:extended
 npm run qa:all:gt

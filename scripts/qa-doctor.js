@@ -582,11 +582,6 @@ function shouldFailProcess() {
     severity: 'low',
     versionCmd: 'websocat --version | head -n 1',
   });
-  checkCommand('proxyman-cli', {
-    severity: 'low',
-    versionCmd: 'proxyman-cli --version | head -n 1',
-    expected: 'Install Proxyman app/cask to enable proxyman-cli.',
-  });
   checkCommand('tshark', {
     severity: 'low',
     versionCmd: 'tshark --version | head -n 1',

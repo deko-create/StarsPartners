@@ -136,6 +136,16 @@ if (process.env.PW_REPORT_JUNIT === '1' || process.env.CI) {
 if (process.env.PW_REPORT_HTML === '1' || process.env.CI) {
   reporters.push(['html', { outputFolder: 'playwright-report', open: 'never' }]);
 }
+if (process.env.PW_REPORT_ALLURE === '1') {
+  reporters.push([
+    'allure-playwright',
+    {
+      outputFolder: process.env.ALLURE_RESULTS_DIR || 'allure-results',
+      detail: true,
+      suiteTitle: true,
+    },
+  ]);
+}
 
 module.exports = defineConfig({
   testDir: './tests',

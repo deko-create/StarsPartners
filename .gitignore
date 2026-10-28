@@ -11,6 +11,8 @@ node_modules/
 test-results/
 playwright-report/
 blob-report/
+allure-results/
+allure-report/
 storageState.json
 --auto
 .lighthouseci/
