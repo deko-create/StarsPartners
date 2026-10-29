@@ -1407,14 +1407,13 @@ function evaluateRunKpis(summary) {
   const providerLaunchPassed = Number(
     providerLaunchCapableRows.filter((item) => {
       const outcome = String(item && item.outcome ? item.outcome : '').toLowerCase();
-      return outcome === 'passed-strong' || outcome === 'passed-weak-surface';
+      return outcome === 'passed-strong';
     }).length
   );
   const providerPassed = Number(
     providerLaunchPassed ||
       (providerMatrix && providerMatrix.summary
-        ? Number(providerMatrix.summary.passedStrong || 0) +
-          Number(providerMatrix.summary.passedWeakSurface || 0)
+        ? Number(providerMatrix.summary.passedStrong || 0)
         : 0) ||
       0
   );
@@ -1494,7 +1493,7 @@ function evaluateRunKpis(summary) {
 
   pushCheck({
     id: 'provider-passed',
-    label: 'Provider real-launch passed count',
+    label: 'Provider real-launch strong-evidence count',
     actual: providerPassed,
     threshold: kpiThresholds.minProviderPassed,
     passed: providerPassed >= kpiThresholds.minProviderPassed,

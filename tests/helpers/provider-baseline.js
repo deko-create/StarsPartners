@@ -149,10 +149,10 @@ const BOOMS_BASELINE_PROVIDERS = [
   'Novomatic',
   'NowNow Gaming',
   'Nucleus',
+  'Megafair',
   'Penguin King',
   'Peter & Sons',
   'PGsoft',
-  "Play'n Go",
   'Playson',
   'Playzia',
   'Pragmatic Play',
@@ -167,13 +167,13 @@ const BOOMS_BASELINE_PROVIDERS = [
   'Spinomenal',
   'Spribe',
   'Swintt',
-  'Thunderkick',
   'Tom Horn Gaming',
   'True Labs',
   'Trusty Gaming',
   'VoltEnt',
   'Winfinity',
   'Yggdrasil',
+  'altente',
 ];
 
 const NIX_BASELINE_PROVIDERS = [

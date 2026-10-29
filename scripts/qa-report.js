@@ -1582,6 +1582,9 @@ function resolveKpiRunStatus(baseStatus, kpi) {
     return 'TEST_INFRA_TIMEOUT';
   }
   if (baseStatus === 'PASSED' && wafSignals) return 'WAF_DEGRADED';
+  if (baseStatus === 'PASSED' && signalTotals.blocked > 0 && (!kpi || kpi.valid !== false)) {
+    return 'PASSED_WITH_BLOCKS';
+  }
   if (!kpi || kpi.valid !== false) return baseStatus;
   return 'INVALID_RUN';
 }
@@ -1988,24 +1991,29 @@ const kpiWaivedChecks = Array.isArray(kpiValidation && kpiValidation.waivedCheck
   : kpiChecks.filter(isKpiWaivedUnmet);
 const qualityGate = (() => {
   const kpiFailed = Boolean(kpiValidation && kpiValidation.valid === false);
-  if (effectiveFailedCount > 0 || kpiFailed) {
+  const releaseCriticalBlocked = tests.filter((test) => {
+    if (!hasAnnotation(test, 'blocked')) return false;
+    const section = resolveSection(test);
+    return ['Registration', 'Login', 'Deposit'].includes(section);
+  });
+  if (effectiveFailedCount > 0 || kpiFailed || releaseCriticalBlocked.length > 0) {
     return {
       verdict: 'NO-GO',
       cssClass: 'decision-no-go',
-      summary: `${Math.max(0, effectiveFailedCount)} hard failure(s); KPI: ${formatKpiVerdict(
-        kpiValidation
-      )}. Release confidence is insufficient.`,
+      summary: `${Math.max(0, effectiveFailedCount)} hard failure(s); ${releaseCriticalBlocked.length} release-critical blocked check(s); KPI: ${formatKpiVerdict(kpiValidation)}. Release confidence is insufficient.`,
     };
   }
   if (
     signalTotals.testInfraTimeout > 0 ||
     signalTotals.blocked > 0 ||
+    signalTotals.partial > 0 ||
+    signalTotals.weakSurface > 0 ||
     !['PASSED'].includes(runStatus)
   ) {
     return {
       verdict: 'CONDITIONAL',
       cssClass: 'decision-conditional',
-      summary: `No hard failures and KPI passed, but ${signalTotals.testInfraTimeout} test-infrastructure timeout(s) and ${signalTotals.blocked} blocked signal(s) limit confidence.`,
+      summary: `No hard failures and KPI passed, but ${signalTotals.testInfraTimeout} test-infrastructure timeout(s), ${signalTotals.blocked} blocked signal(s), ${signalTotals.partial} partial check(s), and ${signalTotals.weakSurface} weak-surface signal(s) limit confidence.`,
     };
   }
   return {

@@ -2428,6 +2428,13 @@ test.describe('Sidebar Matrix', () => {
         ).test(String(payload.afterReloadUrl || ''));
         if (!cookieSelected && !urlSelected) {
           payload.persistenceValidatedBy = payload.persistenceValidatedBy || 'product-blocked';
+          const screenshot = await page.screenshot({ fullPage: false }).catch(() => null);
+          if (screenshot) {
+            await testInfo.attach('sidebar-language-persistence-failed.png', {
+              body: screenshot,
+              contentType: 'image/png',
+            });
+          }
           markBlocked(
             testInfo,
             `Selected locale ${payload.selectedCode} was overridden by the default locale after reload.`

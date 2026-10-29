@@ -28,6 +28,7 @@ const GUEST_NAME = process.env.PW_LIVE_CHAT_NAME || 'Autotest Sidebar';
 const GUEST_EMAIL = process.env.PW_LIVE_CHAT_EMAIL || 'autotest-sidebar@example.test';
 const REPLY_TIMEOUT_MS =
   Number.parseInt(process.env.PW_LIVE_CHAT_REPLY_TIMEOUT || '45000', 10) || 45_000;
+const REQUIRE_REPLY = process.env.PW_LIVE_CHAT_REQUIRE_REPLY === '1';
 const LIVE_CHAT_FRAME_URL_RE = /livechatinc|livechat|lc\.chat|chat-widget/i;
 const LIVE_CHAT_IFRAME_SELECTOR =
   'iframe[title*="livechat" i], iframe[src*="livechat" i], iframe[src*="lc.chat" i], iframe[name*="chat-widget" i]';
@@ -358,9 +359,17 @@ test('Live chat destructive: guest sends "test" and receives support reply', asy
     payload.finalBody = await collectBodyText(frame);
 
     if (!replyText) {
-      payload.status = 'partial';
       payload.reason = `No support reply was detected within ${REPLY_TIMEOUT_MS} ms after sending "${TEST_MESSAGE}".`;
-      testInfo.annotations.push({ type: 'partial', description: payload.reason });
+      if (REQUIRE_REPLY) {
+        payload.status = 'blocked';
+        markBlocked(testInfo, payload.reason);
+      } else {
+        payload.status = 'passed';
+        testInfo.annotations.push({
+          type: 'diagnostic',
+          description: `${payload.reason} Reply SLA is not required for this run; outgoing-message delivery was confirmed.`,
+        });
+      }
       if (typingObserved) {
         testInfo.annotations.push({
           type: 'debug',

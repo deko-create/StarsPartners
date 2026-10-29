@@ -608,7 +608,6 @@ async function openFilterPanelInternal(page) {
   }
 
   const panelSelectors = [
-    '.t-games-catalog__quick-access:visible:has(.t-games-filters-block)',
     '.t-games-filters-mobile__body:visible',
     '.t-games-filters-mobile__body .t-games-filters-block.providers:visible',
     '.t-games-filters-block.providers.is-active-tabs:visible',
@@ -617,6 +616,10 @@ async function openFilterPanelInternal(page) {
     '[class*="games-filters-panel" i]:visible',
     '[class*="filters" i][class*="providers" i]:visible',
   ];
+  // The quick-access wrapper stays visible while its collapse body is closed.
+  // Treating that wrapper as an open panel made the tests inspect the catalog's
+  // always-selected "All" control instead of the provider list. Only a visible
+  // filter body/block is valid evidence that the panel is open.
   const existingPanel = await firstVisibleLocator(page, panelSelectors);
   if (existingPanel) return { opened: true, panel: existingPanel, reason: null };
 

@@ -11,6 +11,10 @@ test('booms provider baseline covers the discovered inventory without the legacy
   assert.equal(providers.includes('swntt'), false);
   assert.equal(providers.includes('Pragmatic Play'), true);
   assert.equal(providers.includes('Winfinity'), true);
+  assert.equal(providers.includes('Megafair'), true);
+  assert.equal(providers.includes('altente'), true);
+  assert.equal(providers.includes("Play'n Go"), false);
+  assert.equal(providers.includes('Thunderkick'), false);
   assert.equal(new Set(providers.map((provider) => provider.toLowerCase())).size, providers.length);
 });
 

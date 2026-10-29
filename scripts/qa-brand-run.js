@@ -391,6 +391,12 @@ function buildRunEnv({ brand, mode, cwd, runProfile }) {
     // path a player uses instead of spending the registration budget on a
     // synthetic request that cannot pass the brand WAF policy.
     PW_SIGNUP_PREFER_API: process.env.PW_SIGNUP_PREFER_API || (brand.key === 'gt' ? '0' : '1'),
+    // booms.bet can reject a plain API/UI request with HTTP 403 even when the
+    // regular browser session is healthy. Allow the native Chrome CDP fallback
+    // to obtain and submit the real Turnstile token before classifying signup
+    // as infrastructure-blocked.
+    PW_SIGNUP_CDP_FALLBACK:
+      process.env.PW_SIGNUP_CDP_FALLBACK || (brand.key === 'booms' ? '1' : '0'),
     PW_SIGNUP_UI_TIMEOUT_MS: process.env.PW_SIGNUP_UI_TIMEOUT_MS || '150000',
     PW_USER_AGENT: process.env.PW_USER_AGENT || cdpMetaUserAgent || '',
     PW_MOBILE_STABILIZE_RERUN: process.env.PW_MOBILE_STABILIZE_RERUN || '0',

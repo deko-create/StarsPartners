@@ -34,6 +34,7 @@ const INFRA_BLOCKED_HINTS = [
   /internet connection appears to be offline|net::err_internet_disconnected|net::err_network_changed|socket hang up/i,
   /net::err_failed|net::err_timed_out|net::err_blocked_by_orb|request failed/i,
   /openapi schema was not found|contract (?:schema|specification|configuration) (?:is )?(?:missing|unavailable)|provide qa_(?:auth|payment)_openapi/i,
+  /registered player credentials were not found|registration must succeed before|current run did not create (?:player )?credentials/i,
 ];
 const TEST_INFRA_TIMEOUT_HINTS = [
   /test_infra_timeout/i,
@@ -771,6 +772,34 @@ async function closeModal(modal, page) {
       }
     } catch {
       // try next selector
+    }
+  }
+
+  // On the current signup shell `.t-popup__close` is a sibling of the inner
+  // `.t-signup-modal`, not its descendant. Search the visible page-level popup
+  // only after the scoped candidates so unrelated dialogs are not closed.
+  if (!closeTriggered) {
+    const pageClose = page
+      .locator(
+        '.t-popup:visible > .t-popup__close:visible, .t-popup:visible .t-popup__close:visible, [role="dialog"]:visible [class*="close" i]:visible'
+      )
+      .last();
+    if (await pageClose.isVisible({ timeout: 800 }).catch(() => false)) {
+      closeTriggered = await pageClose
+        .click({ timeout: 2000, force: true })
+        .then(() => true)
+        .catch(() =>
+          pageClose
+            .evaluate((element) => {
+              element.click();
+              return true;
+            })
+            .catch(() => false)
+        );
+      if (closeTriggered) {
+        await waitForUiSettled(page, 300).catch(() => null);
+        if (await modalIsClosed()) return true;
+      }
     }
   }
 

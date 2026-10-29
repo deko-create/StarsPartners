@@ -246,56 +246,67 @@ async function readBetslipEvidence(page) {
   };
 }
 
-async function clickOddsWithEvidenceUnbounded(page, preferredTarget = null) {
-  await page
-    .waitForFunction(
-      () => {
-        const candidates = Array.from(
-          document.querySelectorAll(
-            'button[data-testid*="odd" i], [data-testid*="odd" i][role="button"], button[class*="odd" i], [class*="odd" i][role="button"], [class*="selection" i][role="button"], #betby span'
-          )
-        );
-        return candidates.some((element) => {
-          const text = String(element.textContent || '')
-            .replace(/\s+/g, ' ')
-            .trim();
-          if (!/\b\d{1,2}[.,]\d{1,3}\b/.test(text) || text.length > 80) return false;
-          const rect = element.getBoundingClientRect();
-          const style = window.getComputedStyle(element);
-          if (
-            rect.width <= 2 ||
-            rect.height <= 2 ||
-            style.display === 'none' ||
-            style.visibility === 'hidden'
-          ) {
-            return false;
-          }
-          let current = element;
-          for (let depth = 0; current && depth < 4; depth += 1, current = current.parentElement) {
-            if (
-              current.tagName === 'BUTTON' ||
-              current.getAttribute('role') === 'button' ||
-              typeof current.onclick === 'function' ||
-              window.getComputedStyle(current).cursor === 'pointer'
-            ) {
-              return true;
-            }
-          }
-          return false;
-        });
-      },
-      { timeout: 12_000 }
-    )
-    .catch(() => null);
+async function tagSemanticOddsTargets(page) {
+  // Betby currently renders odds as styled divs without semantic roles or
+  // stable "odd" class names (for example a cursor-pointer div containing
+  // "draw\n3.50"). Tag the smallest deterministic candidates once so the
+  // regular locator flow does not scan hundreds of generic spans until the
+  // diagnostic budget expires.
+  return page
+    .evaluate(() => {
+      const root = document.querySelector('#betby') || document.body;
+      const nodes = Array.from(root.querySelectorAll('button, [role="button"], div[class]'));
+      let tagged = 0;
+      for (const element of nodes) {
+        if (!(element instanceof globalThis.HTMLElement)) continue;
+        // Avoid repeatedly materialising innerText for large event containers.
+        // An odds choice is a small leaf-like control (label + price).
+        if (element.childElementCount > 5) continue;
+        const rawText = String(element.textContent || '').trim();
+        if (!rawText || rawText.length > 100) continue;
+        const text = rawText.replace(/\s+/g, ' ').trim();
+        const prices = text.match(/\b\d{1,2}[.,]\d{1,3}\b/g) || [];
+        if (prices.length !== 1 || text.length > 80 || /total odds|bet builder/i.test(text)) {
+          continue;
+        }
+        const rect = element.getBoundingClientRect();
+        const style = globalThis.getComputedStyle(element);
+        if (
+          rect.width <= 2 ||
+          rect.height <= 2 ||
+          style.display === 'none' ||
+          style.visibility === 'hidden' ||
+          style.cursor !== 'pointer'
+        ) {
+          continue;
+        }
+        element.setAttribute('data-qa-odds-target', String(tagged));
+        tagged += 1;
+        if (tagged >= 24) break;
+      }
+      return tagged;
+    })
+    .catch(() => 0);
+}
 
-  const selectors = [
-    'button[data-testid*="odd" i]:not([disabled])',
-    '[data-testid*="odd" i][role="button"]',
-    'button[class*="odd" i]:not([disabled])',
-    '[class*="odd" i][role="button"]',
-    '[class*="selection" i][role="button"]',
-    '#betby span',
-  ];
+async function clickOddsWithEvidenceUnbounded(page, preferredTarget = null) {
+  // The widget may render its events after the initial route-ready signal.
+  // Poll the cheap tagger instead of repeatedly traversing every generic span.
+  let taggedOddsCount = 0;
+  for (let attempt = 0; attempt < 20 && taggedOddsCount === 0; attempt += 1) {
+    taggedOddsCount = await tagSemanticOddsTargets(page);
+    if (taggedOddsCount === 0) await sleep(500);
+  }
+  const selectors =
+    taggedOddsCount > 0
+      ? ['[data-qa-odds-target]']
+      : [
+          'button[data-testid*="odd" i]:not([disabled])',
+          '[data-testid*="odd" i][role="button"]',
+          'button[class*="odd" i]:not([disabled])',
+          '[class*="odd" i][role="button"]',
+          '[class*="selection" i][role="button"]',
+        ];
   const attempts = [];
   const seen = new Set();
   const targets = [];
@@ -304,7 +315,7 @@ async function clickOddsWithEvidenceUnbounded(page, preferredTarget = null) {
   }
   for (const selector of selectors) {
     const matches = page.locator(selector);
-    const maxMatches = selector === '#betby span' ? 800 : 80;
+    const maxMatches = 80;
     const visibleTargets = await matches
       .evaluateAll((elements, limit) => {
         const result = [];
@@ -954,7 +965,7 @@ async function openEventFromSportsList(page) {
   const eventLinks = page.locator(
     'a[href*="/sports/"][href*="bt-path="], a[href^="/football/"], a[href^="/soccer/"], a[href^="/tennis/"], a[href^="/basketball/"], a[href^="/ice-hockey/"], a[href^="/hockey/"], a[href^="/volleyball/"]'
   );
-  const eventLinkCount = Math.min(await eventLinks.count().catch(() => 0), 80);
+  const eventLinkCount = Math.min(await eventLinks.count().catch(() => 0), 4);
   for (let index = 0; index < eventLinkCount; index += 1) {
     const locator = eventLinks.nth(index);
     const href = await locator.getAttribute('href').catch(() => '');
@@ -969,7 +980,10 @@ async function openEventFromSportsList(page) {
     } catch {
       routeDepth = 0;
     }
-    if (routeDepth < 3) continue;
+    // Three segments can still be a league route. Event detail routes include
+    // sport/country/league/event and must expose an actual odds control before
+    // being accepted as opened.
+    if (routeDepth < 4) continue;
     const visible = await locator.isVisible({ timeout: 300 }).catch(() => false);
     if (!visible) continue;
     await locator.scrollIntoViewIfNeeded().catch(() => null);
@@ -981,10 +995,26 @@ async function openEventFromSportsList(page) {
       .catch(() => null);
     await waitForUiSettled(page, 500);
     const afterUrl = page.url();
-    attempts.push({ strategy: `event-link:${href}`, afterUrl });
+    let eventSurfaceConfirmed = false;
     if (afterUrl !== beforeUrl && isSportsEventUrl(afterUrl)) {
+      for (let probe = 0; probe < 12 && !eventSurfaceConfirmed; probe += 1) {
+        eventSurfaceConfirmed = (await tagSemanticOddsTargets(page)) > 0;
+        if (!eventSurfaceConfirmed) await sleep(500);
+      }
+    }
+    attempts.push({ strategy: `event-link:${href}`, afterUrl, eventSurfaceConfirmed });
+    if (eventSurfaceConfirmed) {
       return { opened: true, strategy: `event-link:${href}`, beforeUrl, afterUrl, attempts };
     }
+    await page
+      .goto(beforeUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 })
+      .catch(() => null);
+    await waitForUiSettled(page, 1200).catch(() => null);
+    await page
+      .getByText(/upcoming|football|live sports|events|leagues|odds/i)
+      .first()
+      .waitFor({ state: 'visible', timeout: 12_000 })
+      .catch(() => null);
   }
 
   const textCandidates = [
@@ -1038,8 +1068,21 @@ async function openEventFromSportsList(page) {
       await page.mouse.click(absX, absY).catch(() => null);
       await waitForUiSettled(page, 900);
       const afterUrl = page.url();
-      attempts.push({ strategy: `viewport-point:${xRatio},${yRatio}`, absX, absY, afterUrl });
+      let eventSurfaceConfirmed = false;
       if (afterUrl !== beforeUrl && isSportsEventUrl(afterUrl)) {
+        for (let probe = 0; probe < 8 && !eventSurfaceConfirmed; probe += 1) {
+          eventSurfaceConfirmed = (await tagSemanticOddsTargets(page)) > 0;
+          if (!eventSurfaceConfirmed) await sleep(500);
+        }
+      }
+      attempts.push({
+        strategy: `viewport-point:${xRatio},${yRatio}`,
+        absX,
+        absY,
+        afterUrl,
+        eventSurfaceConfirmed,
+      });
+      if (eventSurfaceConfirmed) {
         return {
           opened: true,
           strategy: `viewport-point:${xRatio},${yRatio}`,
@@ -1047,6 +1090,12 @@ async function openEventFromSportsList(page) {
           afterUrl,
           attempts,
         };
+      }
+      if (afterUrl !== beforeUrl) {
+        await page
+          .goto(beforeUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 })
+          .catch(() => null);
+        await waitForUiSettled(page, 1200).catch(() => null);
       }
     }
   }

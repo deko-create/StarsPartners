@@ -134,6 +134,13 @@ test('GT Home: primary buttons work', async ({ page }, testInfo) => {
 
     const closed = await closeModal(modal, page);
     if (!closed) {
+      const screenshot = await page.screenshot({ fullPage: false }).catch(() => null);
+      if (screenshot) {
+        await testInfo.attach('signup-modal-close-failed.png', {
+          body: screenshot,
+          contentType: 'image/png',
+        });
+      }
       markBlocked(
         testInfo,
         'Sign Up exit confirmation Close action does not dismiss the registration modal.'
@@ -180,6 +187,13 @@ test('GT Home: primary buttons work', async ({ page }, testInfo) => {
 
     const closed = await closeModal(modal, page);
     if (!closed) {
+      const screenshot = await page.screenshot({ fullPage: false }).catch(() => null);
+      if (screenshot) {
+        await testInfo.attach('login-modal-close-failed.png', {
+          body: screenshot,
+          contentType: 'image/png',
+        });
+      }
       markBlocked(testInfo, 'Log In close action does not dismiss the authentication modal.');
       modalFlowBlocked = true;
       return;

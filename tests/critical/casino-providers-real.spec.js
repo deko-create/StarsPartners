@@ -228,6 +228,55 @@ function buildUrl(route) {
   return new URL(route, BASE_ORIGIN).toString();
 }
 
+async function probeAuthorizedApi(page, route, explicitToken = '') {
+  const url = buildUrl(route);
+  const browserStatus = await page
+    .evaluate(async (targetUrl) => {
+      const response = await globalThis.fetch(targetUrl, {
+        method: 'GET',
+        credentials: 'include',
+        headers: { accept: 'application/json, text/plain, */*' },
+      });
+      return response.status;
+    }, url)
+    .catch(() => 0);
+  if (browserStatus >= 200 && browserStatus < 400) return browserStatus;
+
+  let token = String(explicitToken || '').trim();
+  if (!token) {
+    const cookies = await page
+      .context()
+      .cookies(BASE_URL)
+      .catch(() => []);
+    const authCookie = cookies.find((cookie) =>
+      /^(?:auth[._-].*token|auth_token|authtoken|access_token|accesstoken|id_token|idtoken)$/i.test(
+        String(cookie && cookie.name ? cookie.name : '')
+      )
+    );
+    token = String((authCookie && authCookie.value) || '').trim();
+  }
+  try {
+    token = decodeURIComponent(token);
+  } catch {
+    // Keep the original cookie value when it is not URI encoded.
+  }
+  token = token.replace(/^bearer\s+/i, '').trim();
+
+  return page.request
+    .get(url, {
+      failOnStatusCode: false,
+      timeout: 20_000,
+      headers: token
+        ? {
+            accept: 'application/json, text/plain, */*',
+            authorization: `Bearer ${token}`,
+          }
+        : { accept: 'application/json, text/plain, */*' },
+    })
+    .then((response) => response.status())
+    .catch(() => browserStatus || 0);
+}
+
 function readAuthStateMeta(filePath, index) {
   if (!filePath || !fs.existsSync(filePath)) return null;
 
@@ -506,13 +555,11 @@ async function recoverAuthStateFromArtifactToken(browser, testInfo, triggerReaso
     await page.goto(BASE_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 }).catch(() => null);
     await dismissOverlays(page).catch(() => null);
 
-    userPreferencesStatus = await page.request
-      .get(buildUrl('/api/user/preferences'), {
-        failOnStatusCode: false,
-        timeout: 20_000,
-      })
-      .then((resp) => resp.status())
-      .catch(() => 0);
+    userPreferencesStatus = await probeAuthorizedApi(
+      page,
+      '/api/user/preferences',
+      tokenArtifact.token
+    );
 
     if (testInfo) {
       testInfo.annotations.push({
@@ -5383,14 +5430,12 @@ async function withCasinoPage(browser, testInfo, testName, run, options = {}) {
             .first()
             .isVisible()
             .catch(() => false);
-      const userPreferencesStatus = await page.request
-        .get(buildUrl('/api/user/preferences'))
-        .then((resp) => resp.status())
-        .catch(() => null);
-      const userProfileStatus = await page.request
-        .get(buildUrl('/api/user/profile'))
-        .then((resp) => resp.status())
-        .catch(() => null);
+      const userPreferencesStatus = await probeAuthorizedApi(page, '/api/user/preferences').catch(
+        () => null
+      );
+      const userProfileStatus = await probeAuthorizedApi(page, '/api/user/profile').catch(
+        () => null
+      );
       const authProbeHealthy = [userPreferencesStatus, userProfileStatus].some(
         (status) => Number(status) >= 200 && Number(status) < 300
       );
