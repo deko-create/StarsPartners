@@ -294,7 +294,7 @@
     "audit-ci": "^7.1.0",
     "browserstack-node-sdk": "^1.73.4",
     "dependency-cruiser": "^18.6.0",
-    "eslint": "^10.13.0",
+    "eslint": "^10.14.0",
     "eslint-plugin-playwright": "^2.12.1",
     "husky": "^9.1.7",
     "knip": "^6.42.0",
