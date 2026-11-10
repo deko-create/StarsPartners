@@ -1945,7 +1945,15 @@ async function runSuiteWithRetry({
   // Provider tests already retry individual failed providers. Re-running the
   // complete Casino phase repeats every successful provider and can add hours
   // while hiding the original deterministic catalog failure.
-  const defaultRetryMax = executionPhase === 'casino' ? 0 : mobileMatrixRun ? 3 : 2;
+  const retryTestTimeouts = process.env.PW_RETRY_TEST_TIMEOUTS === '1';
+  // Registration creates external state and must never be repeated blindly.
+  // Casino already retries individual providers. Other mobile phases get one
+  // retry for genuine browser/network instability instead of four full runs.
+  const defaultRetryMax = ['casino', 'registration'].includes(executionPhase)
+    ? 0
+    : mobileMatrixRun
+      ? 1
+      : 2;
   const retryMax = Number.isFinite(configuredRetryMax)
     ? Math.max(0, configuredRetryMax)
     : defaultRetryMax;
@@ -1955,8 +1963,10 @@ async function runSuiteWithRetry({
     const shouldRetry =
       crashpadHints.some((re) => re.test(result.output)) ||
       networkTransientHints.some((re) => re.test(result.output)) ||
-      testTimeoutDetected ||
-      (mobileMatrixRun && timeoutHints.some((re) => re.test(result.output)));
+      (retryTestTimeouts && testTimeoutDetected) ||
+      (mobileMatrixRun &&
+        !testTimeoutDetected &&
+        timeoutHints.some((re) => re.test(result.output)));
     if (!shouldRetry) break;
 
     attempt += 1;

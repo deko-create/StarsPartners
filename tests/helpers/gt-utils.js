@@ -288,6 +288,26 @@ function formatWafList(list, limit = 5) {
 }
 
 async function findSignupModal(page, timeoutMs = 500) {
+  try {
+    const currentUrl = new URL(page.url());
+    if (
+      /(^|\.)login\.booms\.now$/i.test(currentUrl.hostname) &&
+      /^\/register(?:\/|$)/i.test(currentUrl.pathname)
+    ) {
+      const email = page.locator('input[type="email"], input[name="email"]').first();
+      const password = page.locator('input[type="password"], input[name="password"]').first();
+      const externalFieldsVisible =
+        (await email.isVisible({ timeout: timeoutMs }).catch(() => false)) &&
+        (await password.isVisible({ timeout: timeoutMs }).catch(() => false));
+      // Alpine replaces the fields inside the same registration page after every
+      // Continue click. A form locator filtered by the step-1 email/password
+      // fields stops matching on step 2, so keep a stable page-level container.
+      if (externalFieldsVisible) return page.locator('body');
+    }
+  } catch {
+    // Continue with same-origin modal discovery.
+  }
+
   const selectors = [
     '.t-popup.t-signup-modal',
     '.t-popup:has(input):has-text("Sign up")',
@@ -424,6 +444,33 @@ async function waitForLoginModal(page, timeoutMs = 5000) {
 async function detectSignupTurnstileStall(page) {
   const modal = await findSignupModal(page);
   if (!modal) return null;
+
+  let externalBoomsSignup = false;
+  try {
+    const currentUrl = new URL(page.url());
+    externalBoomsSignup =
+      /(^|\.)login\.booms\.now$/i.test(currentUrl.hostname) &&
+      /^\/register(?:\/|$)/i.test(currentUrl.pathname);
+  } catch {
+    // Keep the generic same-origin Turnstile diagnostic.
+  }
+
+  if (externalBoomsSignup) {
+    const stepOneVisible =
+      (await page
+        .locator('input[type="email"]:visible, input[name="email"]:visible')
+        .first()
+        .isVisible({ timeout: 500 })
+        .catch(() => false)) &&
+      (await page
+        .locator('input[type="password"]:visible, input[name="password"]:visible')
+        .first()
+        .isVisible({ timeout: 500 })
+        .catch(() => false));
+    // The provider keeps an empty hidden Turnstile input on later steps too.
+    // It must not turn an ordinary validation failure into INFRA BLOCKED.
+    if (!stepOneVisible) return null;
+  }
 
   const step1Btn = modal
     .locator(

@@ -661,6 +661,11 @@ class SignupRegistrationPage {
 
   async selectGenderIfPresent() {
     const container = this.getContainer();
+    const labelledMale = container.locator('label:has(input[name="gender"][value="male"])').first();
+    if (await labelledMale.isVisible({ timeout: 500 }).catch(() => false)) {
+      await labelledMale.click({ timeout: 3000 });
+      return true;
+    }
     const male = container
       .locator('button:has-text("Male"), [role="button"]:has-text("Male")')
       .first();
@@ -684,6 +689,23 @@ class SignupRegistrationPage {
 
   async collectDobPlaceholders() {
     const container = this.getContainer();
+    const nativeSelects = container.locator(
+      'select[aria-label*="Birth" i], select[name*="day" i], select[name*="month" i], select[name*="year" i]'
+    );
+    const nativeCount = await nativeSelects.count().catch(() => 0);
+    if (nativeCount >= 3) {
+      const missing = [];
+      for (let index = 0; index < Math.min(nativeCount, 3); index += 1) {
+        const value = await nativeSelects
+          .nth(index)
+          .inputValue()
+          .catch(() => '');
+        if (!value || /^(DD|MM|YYYY)$/i.test(value)) {
+          missing.push(index === 0 ? 'DD' : index === 1 ? 'MM' : 'YYYY');
+        }
+      }
+      return missing;
+    }
     return container.evaluate((root) => {
       const normalize = (value) => (value || '').replace(/\s+/g, ' ').trim();
       const missing = [];
@@ -726,6 +748,14 @@ class SignupRegistrationPage {
 
   async selectDobFromDropdowns(data) {
     const container = this.getContainer();
+    const nativeDobSelects = container.locator('select[aria-label*="Birth" i]');
+    if ((await nativeDobSelects.count().catch(() => 0)) >= 3) {
+      await nativeDobSelects.nth(0).selectOption({ label: String(data.dd).padStart(2, '0') });
+      const monthLabel = monthNames(data.mm)[0] || String(data.mm);
+      await nativeDobSelects.nth(1).selectOption({ label: monthLabel });
+      await nativeDobSelects.nth(2).selectOption({ label: String(data.yyyy) });
+      return;
+    }
     const dobLabel = container.locator('text=Day of Birth').first();
     const dobBlock = (await dobLabel.isVisible({ timeout: 500 }).catch(() => false))
       ? dobLabel.locator('..')
@@ -1165,12 +1195,29 @@ class SignupRegistrationPage {
   async fillStep2(data, opts = {}) {
     const { annotate, errorToast } = opts;
 
+    const externalBoomsSignup = /(^|\.)login\.booms\.now$/i.test(new URL(this.page.url()).hostname);
+    if (externalBoomsSignup) {
+      // The external Alpine form updates asynchronously after the step-1
+      // submit. Wait for the next step instead of attempting to fill fields
+      // while the old controls are still mounted.
+      await this.page
+        .locator(
+          'input[name="firstName" i], input[placeholder*="first" i], input[aria-label*="first" i]'
+        )
+        .first()
+        .waitFor({ state: 'visible', timeout: 10_000 });
+    }
+
     await this.fillFirstVisible(
-      ['input[name="firstName"]', 'input[placeholder*="Name"]', 'input[aria-label*="Name"]'],
+      [
+        'input[name="firstName" i]',
+        'input[placeholder*="first" i]',
+        'input[aria-label*="first" i]',
+      ],
       data.firstName
     );
     await this.fillFirstVisible(
-      ['input[name="lastName"]', 'input[placeholder*="Last"]', 'input[aria-label*="Last"]'],
+      ['input[name="lastName" i]', 'input[placeholder*="last" i]', 'input[aria-label*="last" i]'],
       data.lastName
     );
     await this.fillFirstVisible(
@@ -1182,17 +1229,47 @@ class SignupRegistrationPage {
       data.country || 'Spain'
     );
     await this.fillFirstVisible(
-      ['input[name="city"]', 'input[placeholder*="City"]', 'input[aria-label*="City"]'],
+      ['input[name="city" i]', 'input[placeholder*="city" i]', 'input[aria-label*="city" i]'],
       data.city
     );
     await this.fillFirstVisible(
-      ['input[name="address"]', 'input[placeholder*="Address"]', 'input[aria-label*="Address"]'],
+      [
+        'input[name="address" i]',
+        'input[placeholder*="address" i]',
+        'input[aria-label*="address" i]',
+      ],
       data.address
     );
 
     await this.fillEmptyTextInputs([data.firstName, data.lastName, data.city, data.address], {
       skipCountry: true,
     });
+
+    const countryLabel = this.getContainer()
+      .getByText(/^Country$/i)
+      .first();
+    if (await countryLabel.isVisible({ timeout: 500 }).catch(() => false)) {
+      const countryButton = countryLabel.locator('..').getByRole('button').first();
+      if (await countryButton.isVisible({ timeout: 500 }).catch(() => false)) {
+        await countryButton.click({ timeout: 3000 });
+        const countrySearch = this.page.getByRole('combobox', { name: /search country/i }).first();
+        if (await countrySearch.isVisible({ timeout: 1000 }).catch(() => false)) {
+          await countrySearch.fill(data.country || 'Spain', { timeout: 3000 });
+        }
+        const countryOption = this.page
+          .getByRole('option', {
+            name: new RegExp(`${escapeRegExp(data.country || 'Spain')}$`, 'i'),
+          })
+          .first();
+        if (await countryOption.isVisible({ timeout: 1500 }).catch(() => false)) {
+          await countryOption.click({ timeout: 3000 });
+          this.addNote(
+            annotate,
+            `Country selected in external signup: ${data.country || 'Spain'}.`
+          );
+        }
+      }
+    }
 
     await this.acceptTermsIfPresent();
 
@@ -1244,6 +1321,16 @@ class SignupRegistrationPage {
       return;
     }
 
+    const externalBoomsSignup = /(^|\.)login\.booms\.now$/i.test(new URL(this.page.url()).hostname);
+    if (externalBoomsSignup) {
+      await this.page
+        .locator(
+          'input[type="tel"], input[name="phone" i], select[name*="day" i], select[name*="month" i], select[name*="year" i]'
+        )
+        .first()
+        .waitFor({ state: 'visible', timeout: 10_000 });
+    }
+
     await this.selectGenderIfPresent();
     await this.fillFirstVisible(
       ['input[placeholder="DD"]', 'input[name="day"]', 'input[aria-label*="Day"]'],
@@ -1257,12 +1344,88 @@ class SignupRegistrationPage {
       ['input[placeholder="YYYY"]', 'input[name="year"]', 'input[aria-label*="Year"]'],
       data.yyyy
     );
+    const phoneDigits = String(data.phone || '').replace(/\D+/g, '');
+    const phoneValue = externalBoomsSignup
+      ? `6${phoneDigits.slice(-8).padStart(8, '0')}`
+      : data.phone;
+
+    if (externalBoomsSignup) {
+      const phoneCodeButton = container
+        .locator('button')
+        .filter({ hasText: /^\+\d+/ })
+        .first();
+      if (await phoneCodeButton.isVisible({ timeout: 500 }).catch(() => false)) {
+        const phoneCodeButtonHandle = await phoneCodeButton.elementHandle();
+        await phoneCodeButton.click({ timeout: 3000 });
+        const phoneCountryCandidates = [
+          this.page.getByText('+34', { exact: true }).last(),
+          this.page
+            .locator('button, [role="button"]')
+            .filter({ hasText: /^\+34$/ })
+            .last(),
+          this.page.getByRole('option', { name: /(?:Spain.*\+34|\+34.*Spain)/i }).first(),
+          this.page
+            .locator('[role="option"], li, button')
+            .filter({ hasText: /Spain/i })
+            .filter({ hasText: /\+34/ })
+            .first(),
+          this.page.getByText(/(?:Spain.*\+34|\+34.*Spain)/i).last(),
+        ];
+        let selectedPhoneCountry = false;
+        for (const candidate of phoneCountryCandidates) {
+          if (await candidate.isVisible({ timeout: 1000 }).catch(() => false)) {
+            await candidate.click({ timeout: 3000 });
+            selectedPhoneCountry = true;
+            break;
+          }
+        }
+        if (selectedPhoneCountry) {
+          await sleep(300);
+          const selectedCode = String(
+            (phoneCodeButtonHandle && (await phoneCodeButtonHandle.textContent())) || ''
+          ).trim();
+          if (!selectedCode.includes('+34')) {
+            throw new Error(
+              `External signup phone country selection did not apply: expected +34, actual=${selectedCode || 'empty'}.`
+            );
+          }
+          this.addNote(annotate, 'Phone country code selected in external signup: +34 Spain.');
+        } else {
+          throw new Error('External signup phone country option +34 Spain was not found.');
+        }
+      }
+    }
+
     await this.fillFirstVisible(
       ['input[type="tel"]', 'input[name="phone"]', 'input[placeholder*="Phone"]'],
-      data.phone
+      phoneValue
     );
 
-    await this.fillEmptyTextInputs([data.dd, data.mm, data.yyyy, data.phone]);
+    if (externalBoomsSignup) {
+      const visiblePhone = container.locator('input[type="tel"]:visible').first();
+      const submittedPhone = container.locator('input[name="phone"][type="hidden"]').first();
+      await visiblePhone.press('Tab', { timeout: 1000 }).catch(() => null);
+      await sleep(500);
+      let submittedPhoneValue = await submittedPhone.inputValue().catch(() => '');
+      if (!submittedPhoneValue.startsWith('+34')) {
+        const activeCodeButton = container.locator('button').filter({ hasText: /\+\d+/ }).first();
+        await activeCodeButton.waitFor({ state: 'visible', timeout: 3000 });
+        await activeCodeButton.click({ timeout: 3000 });
+        const exactSpainCode = this.page.getByText('+34', { exact: true }).last();
+        await exactSpainCode.click({ timeout: 3000 });
+        await visiblePhone.fill(phoneValue, { timeout: 3000 });
+        await visiblePhone.press('Tab', { timeout: 1000 }).catch(() => null);
+        await sleep(500);
+        submittedPhoneValue = await submittedPhone.inputValue().catch(() => '');
+      }
+      if (!submittedPhoneValue.startsWith('+34')) {
+        throw new Error(
+          `External signup phone prefix is invalid after selection: expected +34, actual=${submittedPhoneValue || 'empty'}.`
+        );
+      }
+    }
+
+    await this.fillEmptyTextInputs([data.dd, data.mm, data.yyyy, phoneValue]);
     await this.selectDobFromDropdowns(data);
     if ((await this.collectDobPlaceholders()).length) {
       await this.selectDobViaDomFallback(data);
@@ -1270,6 +1433,18 @@ class SignupRegistrationPage {
     await this.debugDobState('after-select');
 
     await this.acceptTermsIfPresent();
+
+    if (externalBoomsSignup) {
+      let turnstileState = await this.getTurnstileState();
+      if (turnstileState.inputCount > 0 && turnstileState.tokenLen === 0) {
+        const resolved = await this.resolveTurnstileToken(annotate);
+        turnstileState = resolved && resolved.state ? resolved.state : turnstileState;
+      }
+      if (turnstileState.inputCount > 0 && turnstileState.tokenLen === 0) {
+        throw new Error('Cloudflare challenge detected (final signup turnstile token not issued).');
+      }
+      debugSignup(`fillStep3:turnstile-token-len=${turnstileState.tokenLen}`);
+    }
 
     const finalSignupBtn = await this.findFinalSignupButton();
 
@@ -1297,6 +1472,7 @@ class SignupRegistrationPage {
 
       await expect(finalSignupBtn).toBeEnabled();
       await finalSignupBtn.click();
+      debugSignup('fillStep3:submitted');
     }
   }
 
@@ -1324,7 +1500,9 @@ class SignupRegistrationPage {
     const container = this.getContainer();
     const successMessage = container.getByText(/successfully registered/i).first();
     const otpInput = container.locator('input[name*="code"], input[placeholder*="code"]').first();
-    const errorMessage = container.getByText(/already exists|invalid/i).first();
+    const errorMessage = container
+      .getByText(/already exists|already been taken|invalid|registration failed/i)
+      .first();
 
     return Promise.race([
       successMessage

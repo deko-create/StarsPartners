@@ -38,6 +38,14 @@ const SIGNIN_VALIDATION_TIMEOUT_MS = Number.parseInt(
 );
 const SIGNUP_UI_TIMEOUT_MS = Number.parseInt(process.env.PW_SIGNUP_UI_TIMEOUT_MS || '150000', 10);
 
+function isExternalBoomsSignupUrl(value) {
+  try {
+    return /(^|\.)login\.booms\.now$/i.test(new URL(value).hostname);
+  } catch {
+    return false;
+  }
+}
+
 async function withTimeout(promise, timeoutMs, message) {
   let timer;
   try {
@@ -266,9 +274,7 @@ async function persistRegistrationWithValidation({ page, data, signupToken, test
   );
 }
 
-test('Sign Up API: successful registration returns token and userId', async ({
-  page,
-}, testInfo) => {
+test('Sign Up: successful registration creates player', async ({ page }, testInfo) => {
   test.setTimeout(300000);
 
   const data = createRegistrationData({
@@ -277,14 +283,31 @@ test('Sign Up API: successful registration returns token and userId', async ({
 
   const wafProbe = createWafProbe(page);
   const signupApiResponses = [];
+  const externalSignupResponses = [];
   let fallbackSignup = null;
   let fallbackTried = false;
+  let externalSsoUi = false;
 
   page.on('response', async (resp) => {
     try {
       const url = resp.url();
       const method = resp.request().method();
       if (method !== 'POST') return;
+      if (isExternalBoomsSignupUrl(url) && /^\/register(?:\?|$)/i.test(new URL(url).pathname)) {
+        const body = await resp.text().catch(() => '');
+        externalSignupResponses.push({
+          url,
+          status: resp.status(),
+          statusText: resp.statusText(),
+          body: oneLine(body).slice(0, 2000),
+        });
+        if (process.env.PW_DEBUG_SIGNUP === '1') {
+          console.log(
+            `[signup-debug] external-register-response=${resp.status()} ${oneLine(body).slice(0, 500)}`
+          );
+        }
+        return;
+      }
       if (!/\/api\/auth\/signup(?:\?|$)/i.test(url)) return;
 
       const contentType = resp.headers()['content-type'] || '';
@@ -307,7 +330,6 @@ test('Sign Up API: successful registration returns token and userId', async ({
   });
 
   try {
-    await page.setViewportSize({ width: 1365, height: 900 });
     const existingCookies = await page
       .context()
       .cookies(BASE_URL)
@@ -374,6 +396,13 @@ test('Sign Up API: successful registration returns token and userId', async ({
       (async () => {
         if (process.env.PW_DEBUG_SIGNUP === '1') console.log('[signup-debug] open-modal:start');
         const modal = await openSignupModal(page);
+        externalSsoUi = isExternalBoomsSignupUrl(page.url());
+        if (externalSsoUi) {
+          testInfo.annotations.push({
+            type: 'registration',
+            description: 'External Booms OIDC signup detected at login.booms.now.',
+          });
+        }
         if (process.env.PW_DEBUG_SIGNUP === '1') console.log('[signup-debug] open-modal:done');
         await expect(modal).toBeVisible({ timeout: 15000 });
         const errorToast = page.getByText(/something went wrong/i).first();
@@ -385,9 +414,11 @@ test('Sign Up API: successful registration returns token and userId', async ({
             annotate: (description) => testInfo.annotations.push({ type: 'debug', description }),
           });
 
-          const outcome = await signupPage.waitForOutcome();
-          if (outcome === 'error') {
-            throw new Error('Registration UI returned an error state (already exists/invalid).');
+          if (!externalSsoUi) {
+            const outcome = await signupPage.waitForOutcome();
+            if (outcome === 'error') {
+              throw new Error('Registration UI returned an error state (already exists/invalid).');
+            }
           }
         } catch (err) {
           if (!isSignupTurnstileBlockedError(err)) throw err;
@@ -412,6 +443,123 @@ test('Sign Up API: successful registration returns token and userId', async ({
       'Signup UI timeout: the multi-step form did not complete within the bounded window.'
     );
 
+    if (externalSsoUi) {
+      const baseHost = new URL(BASE_URL).hostname.replace(/^www\./i, '');
+      try {
+        await expect
+          .poll(
+            () => externalSignupResponses.filter((response) => response.status !== 204).length,
+            {
+              timeout: 30_000,
+              message: 'External signup did not send a final POST /register within 30 seconds.',
+            }
+          )
+          .toBeGreaterThan(0);
+      } catch (error) {
+        const diagnostic = await page
+          .evaluate(() => ({
+            url: globalThis.location.href,
+            text: (globalThis.document.body && globalThis.document.body.innerText
+              ? globalThis.document.body.innerText.replace(/\s+/g, ' ').trim()
+              : ''
+            ).slice(0, 3000),
+            inputs: Array.from(globalThis.document.querySelectorAll('input, select')).map(
+              (element) => ({
+                tag: element.tagName.toLowerCase(),
+                type: element.getAttribute('type') || '',
+                name: element.getAttribute('name') || '',
+                value: element.type === 'password' ? '[set]' : element.value,
+                valid: element.checkValidity(),
+                validationMessage: element.validationMessage,
+              })
+            ),
+            buttons: Array.from(globalThis.document.querySelectorAll('button')).map((button) => ({
+              text: (button.innerText || '').replace(/\s+/g, ' ').trim(),
+              disabled: button.disabled,
+              type: button.type,
+            })),
+          }))
+          .catch(() => ({ url: page.url(), text: '', inputs: [], buttons: [] }));
+        await testInfo.attach('external-signup-no-submit.json', {
+          body: JSON.stringify({ diagnostic, externalSignupResponses }, null, 2),
+          contentType: 'application/json',
+        });
+        throw new Error(
+          `External signup did not send final POST /register. URL=${diagnostic.url}; ` +
+            `invalid=${JSON.stringify(diagnostic.inputs.filter((input) => !input.valid))}; ` +
+            `page=${oneLine(diagnostic.text).slice(0, 500)}`,
+          { cause: error }
+        );
+      }
+      const externalSignup =
+        externalSignupResponses.filter((response) => response.status !== 204).at(-1) || null;
+      expect(
+        externalSignup,
+        'No POST /register response captured from login.booms.now.'
+      ).toBeTruthy();
+      expect(
+        externalSignup && externalSignup.status,
+        `External Booms registration failed: ${JSON.stringify(externalSignup)}`
+      ).toBe(200);
+      await page.waitForURL((url) => url.hostname.replace(/^www\./i, '') === baseHost, {
+        timeout: 60_000,
+        waitUntil: 'domcontentloaded',
+      });
+      await page.waitForLoadState('domcontentloaded').catch(() => null);
+      const cookies = await page.context().cookies(BASE_URL);
+      const authorizedShell = await page
+        .locator(
+          '[class*="balance" i]:visible, [class*="wallet" i]:visible, button:has-text("Deposit"):visible, a[href*="/profile/"]:visible'
+        )
+        .first()
+        .isVisible({ timeout: 15_000 })
+        .catch(() => false);
+      const hasAuthCookie = cookies.some(
+        (cookie) => isAuthTokenName(cookie.name) && Boolean(cookie.value)
+      );
+      const authorizedSession = authorizedShell || hasAuthCookie;
+      if (authorizedSession) {
+        fs.mkdirSync(path.dirname(REGISTRATION_AUTH_STATE_PATH), { recursive: true });
+        await page.context().storageState({ path: REGISTRATION_AUTH_STATE_PATH });
+      } else {
+        testInfo.annotations.push({
+          type: 'registration-session',
+          description:
+            'Player creation returned HTTP 200, but the external provider returned without an authenticated brand session.',
+        });
+      }
+      writeRegistrationData(data, {
+        manualLoginReady: false,
+        status: authorizedSession
+          ? 'registration-session-ok'
+          : 'registration-created-login-required',
+        method: 'external-sso-ui',
+        reason: authorizedSession
+          ? 'Player was created through login.booms.now and returned with an authorized Booms session.'
+          : 'Player was created through login.booms.now (HTTP 200); explicit sign-in is required after registration.',
+        validatedAt: new Date().toISOString(),
+        loginEmail: data.email,
+        profileEmail: data.email,
+      });
+      await testInfo.attach('external-sso-registration.json', {
+        body: JSON.stringify(
+          {
+            provider: 'login.booms.now',
+            registrationResponse: externalSignup,
+            returnedUrl: page.url(),
+            authorizedShell,
+            hasAuthCookie,
+            authorizedSession,
+            cookiesCount: cookies.length,
+          },
+          null,
+          2
+        ),
+        contentType: 'application/json',
+      });
+      return;
+    }
+
     const signupApi = fallbackSignup || signupApiResponses.at(-1);
     assertSignupApiResponse(signupApi);
 
@@ -422,7 +570,7 @@ test('Sign Up API: successful registration returns token and userId', async ({
       testInfo,
     });
   } catch (err) {
-    if (!fallbackTried) {
+    if (!fallbackTried && !externalSsoUi) {
       fallbackTried = true;
       fallbackSignup = await registerPlayerViaApi({ page, data, baseUrl: BASE_URL }).catch(
         () => null

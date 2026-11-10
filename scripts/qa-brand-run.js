@@ -386,17 +386,14 @@ function buildRunEnv({ brand, mode, cwd, runProfile }) {
     // token has been proven to establish an authorized session for this brand.
     PW_LOGIN_PREFER_TOKEN_FALLBACK: process.env.PW_LOGIN_PREFER_TOKEN_FALLBACK || '0',
     PW_LOGIN_ALLOW_SHARED_PLAYER: process.env.PW_LOGIN_ALLOW_SHARED_PLAYER || '0',
-    // GT currently issues a valid Turnstile token through the real multi-step
-    // form, while an API-first request is rejected with 403. Use the same UI
-    // path a player uses instead of spending the registration budget on a
-    // synthetic request that cannot pass the brand WAF policy.
-    PW_SIGNUP_PREFER_API: process.env.PW_SIGNUP_PREFER_API || (brand.key === 'gt' ? '0' : '1'),
-    // booms.bet can reject a plain API/UI request with HTTP 403 even when the
-    // regular browser session is healthy. Allow the native Chrome CDP fallback
-    // to obtain and submit the real Turnstile token before classifying signup
-    // as infrastructure-blocked.
-    PW_SIGNUP_CDP_FALLBACK:
-      process.env.PW_SIGNUP_CDP_FALLBACK || (brand.key === 'booms' ? '1' : '0'),
+    // GT requires its real multi-step form. Booms moved registration to the
+    // external login.booms.now OIDC UI, so its legacy /api/auth/signup endpoint
+    // is no longer a valid first choice either.
+    PW_SIGNUP_PREFER_API:
+      process.env.PW_SIGNUP_PREFER_API || (['gt', 'booms'].includes(brand.key) ? '0' : '1'),
+    // CDP Turnstile fallback targets the legacy same-origin signup endpoint.
+    // Do not spend the Booms registration budget on it now that signup is OIDC.
+    PW_SIGNUP_CDP_FALLBACK: process.env.PW_SIGNUP_CDP_FALLBACK || '0',
     PW_SIGNUP_UI_TIMEOUT_MS: process.env.PW_SIGNUP_UI_TIMEOUT_MS || '150000',
     PW_USER_AGENT: process.env.PW_USER_AGENT || cdpMetaUserAgent || '',
     PW_MOBILE_STABILIZE_RERUN: process.env.PW_MOBILE_STABILIZE_RERUN || '0',

@@ -8,6 +8,7 @@ const {
   maybeSkipWaf,
   waitForHomeContent,
 } = require('../helpers/gt-utils');
+const { isAuthTokenName } = require('../helpers/auth-state');
 
 const BASE_URL = process.env.BASE_URL || 'https://gt.bet/';
 
@@ -61,6 +62,31 @@ async function firstVisible(page, selectors) {
   return null;
 }
 
+async function firstActionable(page, selectors) {
+  for (const selector of selectors) {
+    const candidates = page.locator(selector);
+    const count = Math.min(await candidates.count().catch(() => 0), 12);
+    for (let index = 0; index < count; index += 1) {
+      const candidate = candidates.nth(index);
+      const actionable = await candidate
+        .evaluate((element) => {
+          const rect = element.getBoundingClientRect();
+          if (!rect.width || !rect.height) return false;
+          const x = Math.max(0, Math.min(window.innerWidth - 1, rect.left + rect.width / 2));
+          const y = Math.max(0, Math.min(window.innerHeight - 1, rect.top + rect.height / 2));
+          if (x < 0 || y < 0 || x >= window.innerWidth || y >= window.innerHeight) return false;
+          const top = document.elementFromPoint(x, y);
+          return Boolean(
+            top && (top === element || element.contains(top) || top.contains(element))
+          );
+        })
+        .catch(() => false);
+      if (actionable) return candidate;
+    }
+  }
+  return null;
+}
+
 async function expandHeaderMenu(page) {
   const toggles = [
     '[data-testid="sidebar-burger-button"]',
@@ -92,13 +118,19 @@ test('GT Home: primary buttons work', async ({ page }, testInfo) => {
 
   if (await maybeSkipWaf({ page, probe: wafProbe, testInfo })) return;
 
-  const authorizedShellVisible = await page
-    .locator(
-      'a[href*="/profile/"]:visible, [data-testid*="balance" i]:visible, button:has-text("Deposit"):visible'
-    )
-    .first()
-    .isVisible({ timeout: 1000 })
-    .catch(() => false);
+  const authCookies = await page
+    .context()
+    .cookies(BASE_URL)
+    .catch(() => []);
+  const authorizedShellVisible =
+    authCookies.some((cookie) => isAuthTokenName(cookie.name) && Boolean(cookie.value)) ||
+    (await page
+      .locator(
+        'a[href*="/profile/"]:visible, [data-testid*="balance" i]:visible, [class*="balance" i]:visible, [class*="wallet" i]:visible, button:has-text("Deposit"):visible'
+      )
+      .first()
+      .isVisible({ timeout: 1000 })
+      .catch(() => false));
   let modalFlowBlocked = false;
 
   await test.step('Sign Up button opens/closes modal', async () => {
@@ -125,7 +157,7 @@ test('GT Home: primary buttons work', async ({ page }, testInfo) => {
       });
       return;
     }
-    await signupBtn.click();
+    await signupBtn.click({ timeout: 5000 });
 
     const modal = page
       .locator('.t-signup-modal, [data-testid="signup-modal"], .t-signup:has(input)')
@@ -178,7 +210,7 @@ test('GT Home: primary buttons work', async ({ page }, testInfo) => {
       });
       return;
     }
-    await loginBtn.click();
+    await loginBtn.click({ timeout: 5000 });
 
     const modal = page
       .locator('.t-login-modal, [data-testid="login-modal"], .t-login:has(input)')
@@ -204,7 +236,9 @@ test('GT Home: primary buttons work', async ({ page }, testInfo) => {
 
   await test.step('Search input accepts text', async () => {
     await dismissOverlays(page);
-    const searchInput = await firstVisible(page, [
+    const mobileLayout = (page.viewportSize()?.width || 1365) <= 600;
+    let searchInput = await firstActionable(page, [
+      '.t-game-search-modal input:not([type="hidden"])',
       'input[placeholder="Search"]',
       'input[placeholder="Поиск"]',
       '.t-search__input input',
@@ -212,6 +246,29 @@ test('GT Home: primary buttons work', async ({ page }, testInfo) => {
       '.t-sidebar-menu input[placeholder]',
       'input[type="search"]',
     ]);
+
+    if (mobileLayout && !searchInput) {
+      const searchTrigger = await firstActionable(page, [
+        '[data-testid*="search" i]:not(input)',
+        '[class*="bottom" i] [class*="search" i]',
+        '[class*="mobile" i] [class*="search" i]',
+        'text=/^Search$/i',
+      ]);
+      if (searchTrigger) {
+        await clickActionable(searchTrigger, 5000);
+        await page
+          .locator('.t-game-search-modal input:not([type="hidden"]), input[type="search"]')
+          .first()
+          .waitFor({ state: 'visible', timeout: 5000 })
+          .catch(() => null);
+        searchInput = await firstActionable(page, [
+          '.t-game-search-modal input:not([type="hidden"])',
+          'input[type="search"]',
+          'input[placeholder="Search"]',
+        ]);
+      }
+    }
+
     if (!searchInput) {
       test.info().annotations.push({
         type: 'search',
@@ -219,19 +276,19 @@ test('GT Home: primary buttons work', async ({ page }, testInfo) => {
       });
       return;
     }
-    await searchInput.click().catch(() => null);
+    await searchInput.click({ timeout: 5000 }).catch(() => null);
     await page
       .locator('.t-game-search-modal input:not([type="hidden"])')
       .first()
       .waitFor({ state: 'visible', timeout: 5000 })
       .catch(() => null);
-    const modalSearchInput = await firstVisible(page, [
+    const modalSearchInput = await firstActionable(page, [
       '.t-game-search-modal input:not([type="hidden"])',
       '.t-game-search-modal [contenteditable="true"]',
     ]);
     const effectiveSearchInput = modalSearchInput || searchInput;
-    await effectiveSearchInput.fill('');
-    await effectiveSearchInput.pressSequentially('roulette', { delay: 60 });
+    await effectiveSearchInput.fill('', { timeout: 5000 });
+    await effectiveSearchInput.pressSequentially('roulette', { delay: 60, timeout: 5000 });
     const searchValue = await effectiveSearchInput.inputValue().catch(() => '');
     if (!/roulette/i.test(searchValue)) {
       markBlocked(
@@ -240,7 +297,7 @@ test('GT Home: primary buttons work', async ({ page }, testInfo) => {
       );
       return;
     }
-    await effectiveSearchInput.fill('');
+    await effectiveSearchInput.fill('', { timeout: 5000 });
   });
 
   await test.step('Visible buttons are not disabled (info only)', async () => {

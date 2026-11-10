@@ -1779,7 +1779,7 @@ const registrationNetwork = readJson(registrationNetworkPath);
 const registrationPrimaryTest =
   tests.find((testItem) => /signup-api-success\.spec\.js$/i.test(testItem.file || '')) ||
   tests.find((testItem) =>
-    /sign up api: successful registration returns token and userid/i.test(
+    /sign up(?: api)?: successful registration (?:returns token and userid|creates (?:authorized )?player)/i.test(
       testItem.titlePath || testItem.title || ''
     )
   ) ||
