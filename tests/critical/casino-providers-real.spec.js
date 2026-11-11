@@ -15,6 +15,7 @@ const { applyAuthTokenCookie, registerPlayerViaApi } = require('../helpers/signu
 const { serializeArtifactPayload } = require('../helpers/artifact-output');
 const { resolveMatrixContextOptions } = require('../helpers/context-options');
 const { canonicalProviderName, providerNamesMatch } = require('../helpers/provider-names');
+const { isAuthTokenName } = require('../helpers/auth-state');
 
 const BASE_URL = process.env.BASE_URL || 'https://gt.bet/';
 const BASE_ORIGIN = new URL(BASE_URL).origin;
@@ -248,11 +249,7 @@ async function probeAuthorizedApi(page, route, explicitToken = '') {
       .context()
       .cookies(BASE_URL)
       .catch(() => []);
-    const authCookie = cookies.find((cookie) =>
-      /^(?:auth[._-].*token|auth_token|authtoken|access_token|accesstoken|id_token|idtoken)$/i.test(
-        String(cookie && cookie.name ? cookie.name : '')
-      )
-    );
+    const authCookie = cookies.find((cookie) => isAuthTokenName(cookie && cookie.name));
     token = String((authCookie && authCookie.value) || '').trim();
   }
   try {

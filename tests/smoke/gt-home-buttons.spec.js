@@ -103,6 +103,36 @@ async function expandHeaderMenu(page) {
   return true;
 }
 
+async function resolveAuthEntry(page, modalSelectors, originalUrl) {
+  await Promise.race([
+    page.waitForURL((url) => url.toString() !== originalUrl, { timeout: 15000 }).catch(() => null),
+    page
+      .locator(modalSelectors)
+      .first()
+      .waitFor({ state: 'visible', timeout: 15000 })
+      .catch(() => null),
+  ]);
+
+  const modal = page.locator(modalSelectors).first();
+  if (await modal.isVisible().catch(() => false)) {
+    return { kind: 'modal', modal, url: page.url() };
+  }
+
+  const currentUrl = page.url();
+  if (currentUrl !== originalUrl && /\/login|\/register|\/signup|\/auth/i.test(currentUrl)) {
+    return { kind: 'external', modal: null, url: currentUrl };
+  }
+  return { kind: 'missing', modal: null, url: currentUrl };
+}
+
+async function returnFromExternalAuth(page) {
+  await page.goBack({ waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => null);
+  if (new URL(page.url()).origin !== new URL(BASE_URL).origin) {
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  }
+  await waitForHomeContent(page);
+}
+
 test('GT Home: primary buttons work', async ({ page }, testInfo) => {
   test.setTimeout(180000);
   const wafProbe = createWafProbe(page);
@@ -157,12 +187,25 @@ test('GT Home: primary buttons work', async ({ page }, testInfo) => {
       });
       return;
     }
+    const originalUrl = page.url();
     await signupBtn.click({ timeout: 5000 });
-
-    const modal = page
-      .locator('.t-signup-modal, [data-testid="signup-modal"], .t-signup:has(input)')
-      .first();
-    await expect(modal).toBeVisible({ timeout: 15000 });
+    const authEntry = await resolveAuthEntry(
+      page,
+      '.t-signup-modal, [data-testid="signup-modal"], .t-signup:has(input)',
+      originalUrl
+    );
+    expect(authEntry.kind, 'Sign Up should open an internal modal or external SSO route.').not.toBe(
+      'missing'
+    );
+    if (authEntry.kind === 'external') {
+      testInfo.annotations.push({
+        type: 'external-sso',
+        description: `Sign Up correctly opened the external authentication service: ${new URL(authEntry.url).origin}.`,
+      });
+      await returnFromExternalAuth(page);
+      return;
+    }
+    const modal = authEntry.modal;
 
     const closed = await closeModal(modal, page);
     if (!closed) {
@@ -210,12 +253,25 @@ test('GT Home: primary buttons work', async ({ page }, testInfo) => {
       });
       return;
     }
+    const originalUrl = page.url();
     await loginBtn.click({ timeout: 5000 });
-
-    const modal = page
-      .locator('.t-login-modal, [data-testid="login-modal"], .t-login:has(input)')
-      .first();
-    await expect(modal).toBeVisible({ timeout: 15000 });
+    const authEntry = await resolveAuthEntry(
+      page,
+      '.t-login-modal, [data-testid="login-modal"], .t-login:has(input)',
+      originalUrl
+    );
+    expect(authEntry.kind, 'Log In should open an internal modal or external SSO route.').not.toBe(
+      'missing'
+    );
+    if (authEntry.kind === 'external') {
+      testInfo.annotations.push({
+        type: 'external-sso',
+        description: `Log In correctly opened the external authentication service: ${new URL(authEntry.url).origin}.`,
+      });
+      await returnFromExternalAuth(page);
+      return;
+    }
+    const modal = authEntry.modal;
 
     const closed = await closeModal(modal, page);
     if (!closed) {

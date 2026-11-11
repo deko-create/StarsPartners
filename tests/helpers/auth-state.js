@@ -8,6 +8,10 @@ const AUTH_TOKEN_NAMES = new Set([
   'accesstoken',
   'id_token',
   'idtoken',
+  'sso',
+  'sso_id_token',
+  'sso_refresh_token',
+  'sso_logged_in',
 ]);
 const WAF_COOKIE_NAMES = new Set(['cf_clearance', '__cf_bm', '__cflb', 'cf_chl_2']);
 
@@ -25,7 +29,11 @@ function isUsableCookie(cookie, nowMs = Date.now()) {
 
 function isAuthTokenName(value) {
   const name = normalizeName(value);
-  return AUTH_TOKEN_NAMES.has(name) || /^auth[._-].*token(?:[._-].*)?$/.test(name);
+  return (
+    AUTH_TOKEN_NAMES.has(name) ||
+    /^auth[._-].*token(?:[._-].*)?$/.test(name) ||
+    /^auth_session(?:[._-].*)?$/.test(name)
+  );
 }
 
 function analyzeStorageStatePayload(payload, nowMs = Date.now()) {

@@ -553,6 +553,17 @@ test.describe('Profile Coverage: P0/P1/P2', () => {
         'button:has-text("Edit")',
         'button:has-text("Save")',
       ]);
+      const securityControlsOptional = isCapabilityOptionalForBrand(
+        BASE_URL,
+        'profilePasswordChange'
+      );
+      if (!securityControlsVisible && securityControlsOptional) {
+        testInfo.annotations.push({
+          type: 'not-applicable',
+          description:
+            'Password/security controls are managed by the external SSO provider for this brand.',
+        });
+      }
 
       page.off('response', avatarResponseListener);
 
@@ -564,10 +575,12 @@ test.describe('Profile Coverage: P0/P1/P2', () => {
         detailsControlsVisible,
         'Account details section should expose editable controls.'
       ).toBeTruthy();
-      expect(
-        securityControlsVisible,
-        'Security center should expose password/security controls.'
-      ).toBeTruthy();
+      if (!securityControlsOptional) {
+        expect(
+          securityControlsVisible,
+          'Security center should expose password/security controls.'
+        ).toBeTruthy();
+      }
 
       const payload = {
         accountState,
@@ -590,6 +603,7 @@ test.describe('Profile Coverage: P0/P1/P2', () => {
           state: securityState,
           scroll: securityScroll,
           controlsVisible: securityControlsVisible,
+          optional: securityControlsOptional,
         },
       };
       runtime.tests[testName] = { status: 'passed', payload };

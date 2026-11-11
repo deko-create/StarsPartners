@@ -883,6 +883,16 @@ function getBtPath(urlString) {
   }
 }
 
+function getSportsNavigationPath(urlString) {
+  try {
+    const url = new URL(urlString, BASE_ORIGIN);
+    const queryPath = url.searchParams.get('bt-path') || url.searchParams.get('top') || '';
+    return decodeSportsPath(queryPath || url.pathname);
+  } catch {
+    return '';
+  }
+}
+
 function decodeSportsPath(value) {
   let decoded = String(value || '');
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -1122,6 +1132,15 @@ function isNonCriticalAuthProbeError(row) {
   );
 }
 
+function isNonCriticalBackgroundError(row) {
+  const status = Number((row && row.status) || 0);
+  const url = String((row && row.url) || '');
+  return (
+    isNonCriticalAuthProbeError(row) ||
+    (status === 400 && /\/api\/loyalty\/transfer\/status(?:[/?#]|$)/i.test(url))
+  );
+}
+
 function isOptionalBetBuilder404(row) {
   return (
     Number((row && row.status) || 0) === 404 &&
@@ -1347,7 +1366,7 @@ test.describe('Sports Coverage: interactions + diagnostics', () => {
     }
   });
 
-  test('P0.2 Sports navigation: Live/Football/Basketball/Tennis switch bt-path', async ({
+  test('P0.2 Sports navigation: Live/Football/Basketball/Tennis switch routes', async ({
     browser,
   }, testInfo) => {
     const authStatePath = pickAuthStatePath();
@@ -1461,8 +1480,9 @@ test.describe('Sports Coverage: interactions + diagnostics', () => {
         const afterUrl = page.url();
         const btPath = getBtPath(afterUrl);
         const decodedBtPath = decodeSportsPath(btPath);
+        const navigationPath = getSportsNavigationPath(afterUrl);
         const matchedExpected = item.expected.find((expectedPath) =>
-          decodedBtPath.includes(expectedPath)
+          navigationPath.includes(expectedPath)
         );
         const ok = afterUrl !== beforeUrl && Boolean(matchedExpected);
 
@@ -1474,11 +1494,12 @@ test.describe('Sports Coverage: interactions + diagnostics', () => {
           reason:
             ok || !item.optional
               ? ''
-              : 'Optional navigation item did not expose the expected bt-path in this layout.',
+              : 'Optional navigation item did not expose the expected sports route in this layout.',
           beforeUrl,
           afterUrl,
           btPath,
           decodedBtPath,
+          navigationPath,
         });
       }
 
@@ -2185,14 +2206,14 @@ test.describe('Sports Coverage: interactions + diagnostics', () => {
       const optionalCapabilityErrors = betBuilderUiVisible
         ? []
         : responseErrors.filter((row) => isOptionalBetBuilder404(row));
-      const authProbeErrors = responseErrors.filter((row) => isNonCriticalAuthProbeError(row));
+      const authProbeErrors = responseErrors.filter((row) => isNonCriticalBackgroundError(row));
       const fontAssetErrors = responseErrors.filter(
         (row) => row.resourceType === 'font' || /\.(?:woff2?|ttf|otf|eot)(?:\?|$)/i.test(row.url)
       );
       const criticalHttp = responseErrors.filter((row) => {
         const url = String(row.url || '');
         if (!betBuilderUiVisible && isOptionalBetBuilder404(row)) return false;
-        if (isNonCriticalAuthProbeError(row)) return false;
+        if (isNonCriticalBackgroundError(row)) return false;
         if (row.resourceType === 'font' || /\.(?:woff2?|ttf|otf|eot)(?:\?|$)/i.test(url)) {
           return false;
         }

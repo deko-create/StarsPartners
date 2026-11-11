@@ -56,6 +56,7 @@ const BRAND_CAPABILITIES = {
       guestLiveChatWidgetStates: true,
       guestLiveChatPreChat: true,
       profileBonusDetails: true,
+      profilePasswordChange: true,
       sidebarLanguageMatrix: true,
       sportsEventDetails: true,
       contractOpenApiSchemas: false,
