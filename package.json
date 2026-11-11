@@ -292,7 +292,7 @@
     "@types/node": "^24.19.2",
     "allure-playwright": "^3.14.0",
     "audit-ci": "^7.1.0",
-    "browserstack-node-sdk": "^1.73.4",
+    "browserstack-node-sdk": "^1.78.0",
     "dependency-cruiser": "^18.6.0",
     "eslint": "^10.13.0",
     "eslint-plugin-playwright": "^2.12.1",
