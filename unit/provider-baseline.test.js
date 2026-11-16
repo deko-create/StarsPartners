@@ -62,3 +62,24 @@ test('gt provider baseline covers the complete current inventory', () => {
   assert.equal(providers.length, 57);
   assert.equal(new Set(providers.map((provider) => provider.toLowerCase())).size, providers.length);
 });
+
+test('casho provider baseline matches the current Casho inventory', () => {
+  const providers = getBaselineProviders('https://casho.bet/');
+  const expected = [
+    'Pragmatic Play',
+    'Evolution',
+    'PlayTech',
+    'Nolimit City',
+    '3 Oaks Gaming',
+    'Pragmatic Live',
+    'Ezugi',
+    'betora',
+  ];
+
+  for (const provider of expected) {
+    assert.equal(providers.includes(provider), true, `${provider} should be covered`);
+  }
+  assert.equal(providers.length, 60);
+  assert.equal(providers.includes('Jili Games'), false);
+  assert.equal(new Set(providers.map((provider) => provider.toLowerCase())).size, providers.length);
+});

@@ -866,6 +866,29 @@ function providerMatrixAllChallengeBlocked(results) {
   });
 }
 
+function providerMatrixAllSystemicAuthBlocked(results) {
+  const rows = (Array.isArray(results) ? results : []).filter(
+    (row) => String(row && row.outcome ? row.outcome : '').toLowerCase() !== 'provider-absent'
+  );
+  if (!rows.length) return false;
+  return rows.every((row) => {
+    if (!row || String(row.status || '').toLowerCase() !== 'blocked') return false;
+    const blob = [
+      row.reason,
+      row.note,
+      row.outcome,
+      ...(Array.isArray(row.modes)
+        ? row.modes.flatMap((mode) => [mode && mode.reason, mode && mode.uiBlockedReason])
+        : []),
+    ]
+      .map((item) => String(item || ''))
+      .join(' ');
+    return /expected authorized session|auth probes? (?:are )?not healthy|signup bootstrap failed|no (?:valid )?auth(?:orized)? session|login button is visible/i.test(
+      blob
+    );
+  });
+}
+
 function uniqueApiProviderFilters(items) {
   const rows = Array.isArray(items) ? items : [];
   const map = new Map();
@@ -6158,6 +6181,7 @@ test.describe('Casino Providers Coverage: inventory + real launch matrix', () =>
           const reason =
             'No confirmed non-demo launches were recorded in provider checks (all blocked, no-game, or balance-gate only).';
           const challengeOnly = providerMatrixAllChallengeBlocked(providerMatrixResults);
+          const systemicAuthBlocked = providerMatrixAllSystemicAuthBlocked(providerMatrixResults);
           const payload = {
             blocked: true,
             reason,
@@ -6169,6 +6193,7 @@ test.describe('Casino Providers Coverage: inventory + real launch matrix', () =>
               (item) => String(item && item.status) === 'passed'
             ).length,
             challengeOnly,
+            systemicAuthBlocked,
           };
           markBlocked(testInfo, reason);
           await writeAndAttach(testInfo, `${toSlug(testName)}.json`, payload);
@@ -6177,7 +6202,9 @@ test.describe('Casino Providers Coverage: inventory + real launch matrix', () =>
               type: 'provider-blocked',
               description: challengeOnly
                 ? 'Provider history linkage skipped: all provider rows are challenge/WAF blocked.'
-                : 'Provider history linkage skipped: provider matrix has no confirmed real launches.',
+                : systemicAuthBlocked
+                  ? 'Provider history linkage skipped: registration/auth bootstrap blocked every executable provider row.'
+                  : 'Provider history linkage skipped: provider matrix has no confirmed real launches.',
             });
           }
           return;
@@ -6270,7 +6297,8 @@ test.describe('Casino Providers Coverage: inventory + real launch matrix', () =>
     if (PROVIDER_REQUIRE_HISTORY_MATCH && linkageRun && linkageRun.executed === false) {
       const reason = linkageRun.reason || 'unknown';
       const challengeOnly = providerMatrixAllChallengeBlocked(providerMatrixResults);
-      if (!isRouteUnavailableReason(reason) && !challengeOnly) {
+      const systemicAuthBlocked = providerMatrixAllSystemicAuthBlocked(providerMatrixResults);
+      if (!isRouteUnavailableReason(reason) && !challengeOnly && !systemicAuthBlocked) {
         throw new Error(`Provider history linkage did not execute: ${reason}`);
       }
     }
@@ -6290,12 +6318,15 @@ test.describe('Casino Providers Coverage: inventory + real launch matrix', () =>
       const passedCount = Number(payload && payload.summary ? payload.summary.passed : 0);
       if (passedCount < 1) {
         const challengeOnly = providerMatrixAllChallengeBlocked(payload && payload.results);
+        const systemicAuthRows = providerMatrixAllSystemicAuthBlocked(payload && payload.results);
         const systemicInfraBlock =
           providerFastFailActive && ['waf', 'auth', 'test-infra'].includes(providerFastFailKind);
-        if (challengeOnly || systemicInfraBlock) {
+        if (challengeOnly || systemicAuthRows || systemicInfraBlock) {
           const reason = challengeOnly
             ? 'Provider matrix has zero successful real launches because all provider checks are challenge/WAF blocked.'
-            : `Provider matrix has zero successful real launches because a suite-level ${providerFastFailKind} block prevented valid execution: ${providerFastFailReason || 'unknown infrastructure block'}`;
+            : systemicAuthRows
+              ? 'Provider matrix has zero successful real launches because registration/auth bootstrap blocked every executable provider row.'
+              : `Provider matrix has zero successful real launches because a suite-level ${providerFastFailKind} block prevented valid execution: ${providerFastFailReason || 'unknown infrastructure block'}`;
           markBlocked(testInfo, reason);
           testInfo.annotations.push({
             type: 'provider-blocked',

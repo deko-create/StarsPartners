@@ -2602,6 +2602,11 @@ test.describe('Sidebar Matrix', () => {
       const nameInput = chatFrame.locator('input[type="text"]').first();
       const emailInput = chatFrame.locator('input[type="email"]').first();
       const startButton = chatFrame.getByRole('button', { name: /start the chat/i }).first();
+      const messageComposer = chatFrame
+        .locator(
+          'textarea[aria-label*="message" i], textarea[placeholder*="message" i], textarea:visible, input[placeholder*="message" i], [contenteditable="true"][role="textbox"]'
+        )
+        .first();
       const minimizeButton = chatFrame
         .locator(
           'button[aria-label*="minimize" i], button[aria-label*="collapse" i], button[title*="minimize" i]'
@@ -2613,6 +2618,7 @@ test.describe('Sidebar Matrix', () => {
         nameInput.waitFor({ state: 'visible', timeout: 12000 }).catch(() => null),
         emailInput.waitFor({ state: 'visible', timeout: 12000 }).catch(() => null),
         minimizeButton.waitFor({ state: 'visible', timeout: 12000 }).catch(() => null),
+        messageComposer.waitFor({ state: 'visible', timeout: 12000 }).catch(() => null),
       ]);
 
       payload.controls = {
@@ -2620,7 +2626,25 @@ test.describe('Sidebar Matrix', () => {
         emailVisible: await emailInput.isVisible().catch(() => false),
         startVisible: await startButton.isVisible().catch(() => false),
         minimizeVisible: await minimizeButton.isVisible().catch(() => false),
+        composerVisible: await messageComposer.isVisible().catch(() => false),
       };
+
+      if (payload.controls.composerVisible && !payload.controls.startVisible) {
+        payload.status = 'not-applicable';
+        payload.reason =
+          'Intercom restored an existing guest conversation and exposed the message composer directly; the pre-chat identity form is not applicable to this widget state.';
+        testInfo.annotations.push({
+          type: 'not-applicable',
+          description: payload.reason,
+        });
+        await testInfo.attach('guest-live-chat-prechat.json', {
+          body: JSON.stringify(payload, null, 2),
+          contentType: 'application/json',
+        });
+        const artifactPath = await writeArtifact('guest-live-chat-prechat.json', payload);
+        testInfo.annotations.push({ type: 'artifact', description: artifactPath });
+        return;
+      }
 
       if (
         !payload.controls.nameVisible ||

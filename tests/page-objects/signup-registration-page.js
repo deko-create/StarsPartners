@@ -993,7 +993,6 @@ class SignupRegistrationPage {
       phoneRoot.locator('button:visible').first(),
       phoneRoot.locator('[role="button"]:visible').first(),
       phoneRoot.locator('[class*="country" i]:visible').first(),
-      phoneRoot.locator('[class*="flag" i]:visible').first(),
       phoneRoot.locator('[class*="prefix" i]:visible').first(),
     ];
     let opened = false;

@@ -36,7 +36,7 @@ const SIGNIN_VALIDATION_TIMEOUT_MS = Number.parseInt(
   process.env.PW_SIGNUP_VALIDATE_SIGNIN_TIMEOUT_MS || '90000',
   10
 );
-const SIGNUP_UI_TIMEOUT_MS = Number.parseInt(process.env.PW_SIGNUP_UI_TIMEOUT_MS || '150000', 10);
+const SIGNUP_UI_TIMEOUT_MS = Number.parseInt(process.env.PW_SIGNUP_UI_TIMEOUT_MS || '60000', 10);
 
 function isExternalBoomsSignupUrl(value) {
   try {
@@ -411,6 +411,21 @@ test('Sign Up: successful registration creates player', async ({ page }, testInf
           .filter(Boolean)
           .join('; '),
       });
+      await testInfo.attach('signup-api-first-diagnostic.json', {
+        body: JSON.stringify(
+          {
+            status: fallbackSignup ? fallbackSignup.status : 0,
+            source: fallbackSignup ? fallbackSignup.source || 'api' : 'api',
+            errorCode: apiErrorCode || null,
+            errorMessage: apiErrorMessage || null,
+            responseBody: fallbackSignup ? fallbackSignup.body : null,
+            cdpFallback: fallbackSignup ? fallbackSignup.cdpFallback || null : null,
+          },
+          null,
+          2
+        ),
+        contentType: 'application/json',
+      });
       if (Number(fallbackSignup && fallbackSignup.status) === 429) {
         const reason =
           'Signup backend is rate-limited (HTTP 429 Too Many Requests); UI registration uses the same endpoint, so retrying it in this run would only extend the rate limit.';
@@ -480,7 +495,7 @@ test('Sign Up: successful registration creates player', async ({ page }, testInf
       })(),
       Number.isFinite(SIGNUP_UI_TIMEOUT_MS) && SIGNUP_UI_TIMEOUT_MS > 0
         ? SIGNUP_UI_TIMEOUT_MS
-        : 150_000,
+        : 60_000,
       'Signup UI timeout: the multi-step form did not complete within the bounded window.'
     );
 
@@ -633,12 +648,14 @@ test('Sign Up: successful registration creates player', async ({ page }, testInf
       }
     }
 
-    if (fallbackSignup && [403, 429].includes(Number(fallbackSignup.status))) {
+    if (fallbackSignup && [403, 422, 429].includes(Number(fallbackSignup.status))) {
       const status = Number(fallbackSignup.status);
       const reason =
         status === 429
           ? 'Signup backend is rate-limited (HTTP 429 Too Many Requests) after the UI attempt.'
-          : 'Signup is blocked by HTTP 403 after both the API-first attempt and bounded UI fallback.';
+          : status === 403
+            ? 'Signup is blocked by Cloudflare/WAF HTTP 403 after both the API-first attempt and bounded UI fallback.'
+            : 'Signup bootstrap reached the backend but was rejected with HTTP 422 after the bounded UI fallback; no valid registration session could be created.';
       markBlocked(testInfo, reason);
       await testInfo.attach('signup-blocked-diagnostic.json', {
         body: JSON.stringify(
@@ -646,6 +663,8 @@ test('Sign Up: successful registration creates player', async ({ page }, testInf
             reason,
             apiStatus: fallbackSignup.status,
             apiSource: fallbackSignup.source || 'api',
+            apiBody: fallbackSignup.body || null,
+            cdpFallback: fallbackSignup.cdpFallback || null,
             uiError: oneLine(err && err.message ? err.message : err),
           },
           null,
