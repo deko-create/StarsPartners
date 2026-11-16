@@ -174,8 +174,6 @@ const BRAND_CAPABILITIES = {
       authorizedSidebarPrimaryNavigation: true,
       authorizedSidebarSecondaryNavigation: true,
       authorizedSidebarServiceActions: true,
-      guestLiveChatWidgetStates: true,
-      guestLiveChatPreChat: true,
       profileBonusDetails: true,
       sidebarLanguageMatrix: true,
       sportsEventDetails: true,

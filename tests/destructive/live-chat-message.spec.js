@@ -29,9 +29,10 @@ const GUEST_EMAIL = process.env.PW_LIVE_CHAT_EMAIL || 'autotest-sidebar@example.
 const REPLY_TIMEOUT_MS =
   Number.parseInt(process.env.PW_LIVE_CHAT_REPLY_TIMEOUT || '45000', 10) || 45_000;
 const REQUIRE_REPLY = process.env.PW_LIVE_CHAT_REQUIRE_REPLY === '1';
-const LIVE_CHAT_FRAME_URL_RE = /livechatinc|livechat|lc\.chat|chat-widget/i;
+const LIVE_CHAT_FRAME_URL_RE =
+  /livechatinc|livechat|lc\.chat|chat-widget|gist\.build|cloud\.gist|intercom/i;
 const LIVE_CHAT_IFRAME_SELECTOR =
-  'iframe[title*="livechat" i], iframe[src*="livechat" i], iframe[src*="lc.chat" i], iframe[name*="chat-widget" i]';
+  'iframe[title*="livechat" i], iframe[title*="chat" i], iframe[title*="intercom" i], iframe[src*="livechat" i], iframe[src*="lc.chat" i], iframe[src*="gist.build" i], iframe[name*="chat-widget" i], iframe[name*="intercom" i]';
 
 function compactText(value) {
   return String(value || '')
@@ -66,16 +67,20 @@ function writeArtifact(payload, fileName = 'guest-live-chat-message.json') {
 
 async function waitForChatFrame(page, timeoutMs = 20_000) {
   let frame = null;
+  const findContentFrame = () =>
+    page.frames().find((item) => {
+      const frameName = typeof item.name === 'function' ? item.name() : '';
+      const frameUrl = typeof item.url === 'function' ? item.url() : '';
+      if (/^intercom-frame$/i.test(frameName)) return false;
+      return LIVE_CHAT_FRAME_URL_RE.test(`${frameName} ${frameUrl}`);
+    }) || null;
   await expect
     .poll(
       async () => {
         frame =
           page.frame({ name: 'chat-widget' }) ||
-          page.frames().find((item) => {
-            const frameName = typeof item.name === 'function' ? item.name() : '';
-            const frameUrl = typeof item.url === 'function' ? item.url() : '';
-            return LIVE_CHAT_FRAME_URL_RE.test(`${frameName} ${frameUrl}`);
-          }) ||
+          page.frame({ name: 'intercom-messenger-frame' }) ||
+          findContentFrame() ||
           null;
         if (!frame) {
           const hasLiveChatIframe = await page
@@ -86,11 +91,8 @@ async function waitForChatFrame(page, timeoutMs = 20_000) {
           if (hasLiveChatIframe) {
             frame =
               page.frame({ name: 'chat-widget' }) ||
-              page.frames().find((item) => {
-                const frameName = typeof item.name === 'function' ? item.name() : '';
-                const frameUrl = typeof item.url === 'function' ? item.url() : '';
-                return LIVE_CHAT_FRAME_URL_RE.test(`${frameName} ${frameUrl}`);
-              }) ||
+              page.frame({ name: 'intercom-messenger-frame' }) ||
+              findContentFrame() ||
               null;
           }
         }
@@ -246,7 +248,7 @@ test('Live chat destructive: guest sends "test" and receives support reply', asy
       .first();
     const composer = frame
       .locator(
-        'textarea[aria-label*="message" i], textarea[placeholder*="message" i], textarea[data-testid*="message" i], input[placeholder*="message" i], [contenteditable="true"][role="textbox"], [contenteditable="true"][data-testid*="message" i], [contenteditable="true"][aria-label*="message" i]'
+        'textarea[aria-label*="message" i], textarea[placeholder*="message" i], textarea[placeholder*="сообщ" i], textarea[data-testid*="message" i], textarea:visible, input[placeholder*="message" i], input[placeholder*="сообщ" i], [contenteditable="true"][role="textbox"], [contenteditable="true"][data-testid*="message" i], [contenteditable="true"][aria-label*="message" i]'
       )
       .first();
 
@@ -276,7 +278,7 @@ test('Live chat destructive: guest sends "test" and receives support reply', asy
 
     const sendButton = frame
       .locator(
-        'button[aria-label*="send" i], button[title*="send" i], button[type="submit"], [data-testid*="send" i]'
+        'button[aria-label*="send" i], button[aria-label*="отправ" i], button[title*="send" i], button[title*="отправ" i], button[type="submit"], [data-testid*="send" i]'
       )
       .first();
 

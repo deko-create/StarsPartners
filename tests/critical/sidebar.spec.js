@@ -66,9 +66,10 @@ const AUTH_STATE_CANDIDATES = [
 ]
   .filter(Boolean)
   .filter((candidate, index, all) => all.indexOf(candidate) === index);
-const LIVE_CHAT_FRAME_URL_RE = /livechatinc|livechat|lc\.chat|chat-widget/i;
+const LIVE_CHAT_FRAME_URL_RE =
+  /livechatinc|livechat|lc\.chat|chat-widget|gist\.build|cloud\.gist|intercom/i;
 const LIVE_CHAT_IFRAME_SELECTOR =
-  'iframe[title*="livechat" i], iframe[src*="livechat" i], iframe[src*="lc.chat" i], iframe[name*="chat-widget" i]';
+  'iframe[title*="livechat" i], iframe[title*="chat" i], iframe[title*="intercom" i], iframe[src*="livechat" i], iframe[src*="lc.chat" i], iframe[src*="gist.build" i], iframe[name*="chat-widget" i], iframe[name*="intercom" i]';
 const AUTH_NAV_CHECK_OPTIONS = {
   routeRetries: 1,
   navigationTimeoutMs: 15000,
@@ -1051,6 +1052,7 @@ function isLiveChatFrameInfo(frame) {
 function isLiveChatFrame(frame) {
   const frameName = typeof frame.name === 'function' ? frame.name() : '';
   const frameUrl = typeof frame.url === 'function' ? frame.url() : '';
+  if (/^intercom-frame$/i.test(frameName)) return false;
   return LIVE_CHAT_FRAME_URL_RE.test(`${frameName} ${frameUrl}`);
 }
 
@@ -1064,6 +1066,7 @@ async function collectLiveChatFrameMeta(page) {
 function getLiveChatFrame(page) {
   return (
     page.frame({ name: 'chat-widget' }) ||
+    page.frame({ name: 'intercom-messenger-frame' }) ||
     page.frames().find((frame) => isLiveChatFrame(frame)) ||
     null
   );

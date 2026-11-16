@@ -386,10 +386,51 @@ test('Sign Up: successful registration creates player', async ({ page }, testInf
         });
         return;
       }
+      const apiErrorCode = String(
+        (fallbackSignup && fallbackSignup.body && fallbackSignup.body.errorCode) || ''
+      ).trim();
+      const apiErrorMessage = String(
+        (fallbackSignup && fallbackSignup.body && fallbackSignup.body.errorMessage) || ''
+      )
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 240);
+      if (process.env.PW_DEBUG_SIGNUP === '1') {
+        console.log(
+          `[signup-debug] api-first status=${fallbackSignup ? fallbackSignup.status : 0} errorCode=${apiErrorCode || '-'} errorMessage=${apiErrorMessage || '-'}`
+        );
+      }
       testInfo.annotations.push({
         type: 'registration',
-        description: `API-first signup was unavailable (status=${fallbackSignup ? fallbackSignup.status : 0}); continuing with UI coverage.`,
+        description: [
+          `API-first signup was unavailable (status=${fallbackSignup ? fallbackSignup.status : 0})`,
+          apiErrorCode ? `errorCode=${apiErrorCode}` : '',
+          apiErrorMessage ? `errorMessage=${apiErrorMessage}` : '',
+          'continuing with UI coverage.',
+        ]
+          .filter(Boolean)
+          .join('; '),
       });
+      if (Number(fallbackSignup && fallbackSignup.status) === 429) {
+        const reason =
+          'Signup backend is rate-limited (HTTP 429 Too Many Requests); UI registration uses the same endpoint, so retrying it in this run would only extend the rate limit.';
+        markBlocked(testInfo, reason);
+        await testInfo.attach('signup-rate-limit-diagnostic.json', {
+          body: JSON.stringify(
+            {
+              reason,
+              apiStatus: fallbackSignup.status,
+              apiSource: fallbackSignup.source || 'api',
+              errorCode: apiErrorCode || null,
+              errorMessage: apiErrorMessage || null,
+            },
+            null,
+            2
+          ),
+          contentType: 'application/json',
+        });
+        return;
+      }
     }
 
     await withTimeout(
@@ -592,9 +633,12 @@ test('Sign Up: successful registration creates player', async ({ page }, testInf
       }
     }
 
-    if (fallbackSignup && Number(fallbackSignup.status) === 403) {
+    if (fallbackSignup && [403, 429].includes(Number(fallbackSignup.status))) {
+      const status = Number(fallbackSignup.status);
       const reason =
-        'Signup is blocked by HTTP 403 after both the API-first attempt and bounded UI fallback.';
+        status === 429
+          ? 'Signup backend is rate-limited (HTTP 429 Too Many Requests) after the UI attempt.'
+          : 'Signup is blocked by HTTP 403 after both the API-first attempt and bounded UI fallback.';
       markBlocked(testInfo, reason);
       await testInfo.attach('signup-blocked-diagnostic.json', {
         body: JSON.stringify(

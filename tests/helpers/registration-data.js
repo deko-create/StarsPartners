@@ -77,19 +77,24 @@ function createRegistrationData(options = {}) {
   const city = options.city || env.REG_CITY || faker.location.city();
   const address = options.address || env.REG_ADDRESS || faker.location.streetAddress();
 
+  const country = options.country || env.REG_COUNTRY || 'Spain';
+  const defaultPhone = /^spain$/i.test(country)
+    ? `+346${faker.string.numeric(8)}`
+    : faker.string.numeric(10);
+
   return {
     email: buildRegistrationEmail(options),
     emailDateDisplay: options.emailDate || env.REG_EMAIL_DATE || formatDateTagForDisplay(),
     password: options.password || env.REG_PASSWORD || buildRuntimePassword(),
     firstName,
     lastName,
-    country: options.country || env.REG_COUNTRY || 'Spain',
+    country,
     city,
     address,
     dd: options.dd || env.REG_DD || '01',
     mm: options.mm || env.REG_MM || '01',
     yyyy: options.yyyy || env.REG_YYYY || '2001',
-    phone: options.phone || env.REG_PHONE || faker.string.numeric(10),
+    phone: options.phone || env.REG_PHONE || defaultPhone,
   };
 }
 

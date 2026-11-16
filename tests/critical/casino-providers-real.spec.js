@@ -77,6 +77,8 @@ const AUTH_RECOVERY_OUTPUT_PATHS = [
   path.join(PROJECT_TEST_RESULTS_DIR, 'registration-data.json'),
 ];
 const PROVIDER_SIGNUP_BOOTSTRAP_ENABLED = process.env.PW_PROVIDER_SIGNUP_BOOTSTRAP !== '0';
+let providerSignupBootstrapPromise = null;
+let providerAuthRecoveryPromise = null;
 const PROVIDER_PROFILE = String(process.env.PW_PROVIDER_PROFILE || 'smoke')
   .trim()
   .toLowerCase();
@@ -495,6 +497,13 @@ async function bootstrapAuthTokenViaSignup(browser, testInfo, triggerReason = ''
   }
 }
 
+async function bootstrapAuthTokenViaSignupOnce(browser, testInfo, triggerReason = '') {
+  if (!providerSignupBootstrapPromise) {
+    providerSignupBootstrapPromise = bootstrapAuthTokenViaSignup(browser, testInfo, triggerReason);
+  }
+  return providerSignupBootstrapPromise;
+}
+
 function extractAuthTokenArtifact() {
   for (const filePath of AUTH_RECOVERY_INPUT_CANDIDATES) {
     const payload = readJson(filePath);
@@ -520,7 +529,7 @@ async function recoverAuthStateFromArtifactToken(browser, testInfo, triggerReaso
   let tokenArtifact = extractAuthTokenArtifact();
   let signupBootstrapReason = '';
   if (!tokenArtifact) {
-    const signupBootstrap = await bootstrapAuthTokenViaSignup(browser, testInfo, triggerReason);
+    const signupBootstrap = await bootstrapAuthTokenViaSignupOnce(browser, testInfo, triggerReason);
     if (signupBootstrap && signupBootstrap.ok && signupBootstrap.tokenArtifact) {
       tokenArtifact = signupBootstrap.tokenArtifact;
     } else {
@@ -611,6 +620,17 @@ async function recoverAuthStateFromArtifactToken(browser, testInfo, triggerReaso
   } finally {
     if (context) await closeContextSafe(context, 8_000);
   }
+}
+
+async function recoverAuthStateFromArtifactTokenOnce(browser, testInfo, triggerReason = '') {
+  if (!providerAuthRecoveryPromise) {
+    providerAuthRecoveryPromise = recoverAuthStateFromArtifactToken(
+      browser,
+      testInfo,
+      triggerReason
+    );
+  }
+  return providerAuthRecoveryPromise;
 }
 
 function toSlug(value) {
@@ -5326,7 +5346,7 @@ async function withCasinoPage(browser, testInfo, testName, run, options = {}) {
   let authRecoveryReason = '';
 
   if (requireAuthState && !authStatePath && !authRecoveryAttempted) {
-    const recovered = await recoverAuthStateFromArtifactToken(
+    const recovered = await recoverAuthStateFromArtifactTokenOnce(
       browser,
       testInfo,
       'missing-auth-state'
@@ -5347,6 +5367,11 @@ async function withCasinoPage(browser, testInfo, testName, run, options = {}) {
         'No auth storage state found for authorized casino checks.' +
         (authRecoveryReason ? ` Recovery attempt failed: ${authRecoveryReason}` : ''),
     };
+    if (PROVIDER_FAST_FAIL_ON_UI_BLOCKED) {
+      providerFastFailActive = true;
+      providerFastFailKind = 'auth';
+      providerFastFailReason = payload.reason;
+    }
     markBlocked(testInfo, payload.reason);
     await writeAndAttach(testInfo, `${toSlug(testName)}.json`, payload);
     return {
@@ -5438,7 +5463,7 @@ async function withCasinoPage(browser, testInfo, testName, run, options = {}) {
       );
       if (!uiBlocked && loginVisible && !authProbeHealthy) {
         if (!authRecoveryAttempted) {
-          const recovered = await recoverAuthStateFromArtifactToken(
+          const recovered = await recoverAuthStateFromArtifactTokenOnce(
             browser,
             testInfo,
             `login-visible-auth-probe-${Number(userPreferencesStatus || 0)}-${Number(userProfileStatus || 0)}`
@@ -5462,6 +5487,11 @@ async function withCasinoPage(browser, testInfo, testName, run, options = {}) {
           userPreferencesStatus,
           userProfileStatus,
         };
+        if (PROVIDER_FAST_FAIL_ON_UI_BLOCKED) {
+          providerFastFailActive = true;
+          providerFastFailKind = 'auth';
+          providerFastFailReason = payload.reason;
+        }
         markBlocked(testInfo, payload.reason);
         await writeAndAttach(testInfo, `${toSlug(testName)}.json`, payload);
         return { executed: false, blocked: true, reason: payload.reason, route, authStatePath };
@@ -5501,7 +5531,7 @@ async function withCasinoPage(browser, testInfo, testName, run, options = {}) {
             authRecoveryReason =
               'Recovery skipped: casino route is challenge-blocked and auth probes are unavailable.';
           } else {
-            const recovered = await recoverAuthStateFromArtifactToken(
+            const recovered = await recoverAuthStateFromArtifactTokenOnce(
               browser,
               testInfo,
               `auth-probe-${Number(userPreferencesStatus || 0)}-${Number(userProfileStatus || 0)}`
@@ -5526,6 +5556,11 @@ async function withCasinoPage(browser, testInfo, testName, run, options = {}) {
           userPreferencesStatus,
           userProfileStatus,
         };
+        if (PROVIDER_FAST_FAIL_ON_UI_BLOCKED) {
+          providerFastFailActive = true;
+          providerFastFailKind = 'auth';
+          providerFastFailReason = payload.reason;
+        }
         markBlocked(testInfo, payload.reason);
         await writeAndAttach(testInfo, `${toSlug(testName)}.json`, payload);
         return { executed: false, blocked: true, reason: payload.reason, route, authStatePath };
@@ -6255,9 +6290,12 @@ test.describe('Casino Providers Coverage: inventory + real launch matrix', () =>
       const passedCount = Number(payload && payload.summary ? payload.summary.passed : 0);
       if (passedCount < 1) {
         const challengeOnly = providerMatrixAllChallengeBlocked(payload && payload.results);
-        if (challengeOnly) {
-          const reason =
-            'Provider matrix has zero successful real launches because all provider checks are challenge/WAF blocked.';
+        const systemicInfraBlock =
+          providerFastFailActive && ['waf', 'auth', 'test-infra'].includes(providerFastFailKind);
+        if (challengeOnly || systemicInfraBlock) {
+          const reason = challengeOnly
+            ? 'Provider matrix has zero successful real launches because all provider checks are challenge/WAF blocked.'
+            : `Provider matrix has zero successful real launches because a suite-level ${providerFastFailKind} block prevented valid execution: ${providerFastFailReason || 'unknown infrastructure block'}`;
           markBlocked(testInfo, reason);
           testInfo.annotations.push({
             type: 'provider-blocked',

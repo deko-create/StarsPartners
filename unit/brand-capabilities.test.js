@@ -52,3 +52,11 @@ test('maps current IGO layout gaps to explicit optional capabilities', () => {
     assert.equal(isCapabilityOptionalForBrand('https://igo.bet/', capability), true);
   }
 });
+
+test('Casho guest Intercom chat is covered instead of treated as optional', () => {
+  assert.equal(
+    isCapabilityOptionalForBrand('https://casho.bet/', 'guestLiveChatWidgetStates'),
+    false
+  );
+  assert.equal(isCapabilityOptionalForBrand('https://casho.bet/', 'guestLiveChatPreChat'), false);
+});

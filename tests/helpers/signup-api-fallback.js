@@ -8,12 +8,14 @@ const { chromium } = require('playwright');
 
 const DEFAULT_BASE_URL = process.env.BASE_URL || 'https://gt.bet/';
 
-const COUNTRY_ID_BY_NAME = {
-  spain: 171,
-  spagna: 171,
-  españa: 171,
-  espana: 171,
+const COUNTRY_PROFILE_BY_NAME = {
+  spain: { countryId: 171, dialingCode: '34', nationalDigits: 9, zipcode: '28001' },
+  spagna: { countryId: 171, dialingCode: '34', nationalDigits: 9, zipcode: '28001' },
+  españa: { countryId: 171, dialingCode: '34', nationalDigits: 9, zipcode: '28001' },
+  espana: { countryId: 171, dialingCode: '34', nationalDigits: 9, zipcode: '28001' },
 };
+
+const DEFAULT_COUNTRY_PROFILE = COUNTRY_PROFILE_BY_NAME.spain;
 
 const DEFAULT_CDP_TIMEOUT_MS = 90_000;
 
@@ -513,21 +515,40 @@ function normalizeYear(value, fallback) {
   return digits.padStart(4, '0').slice(-4);
 }
 
-function resolveCountryId(country, fallback = 171) {
+function resolveCountryProfile(country, options = {}) {
   const key = String(country || '')
     .trim()
     .toLowerCase();
-  return COUNTRY_ID_BY_NAME[key] || fallback;
+  const configured = COUNTRY_PROFILE_BY_NAME[key] || DEFAULT_COUNTRY_PROFILE;
+  return {
+    countryId: Number(options.countryId || configured.countryId),
+    dialingCode: String(options.dialingCode || configured.dialingCode).replace(/\D+/g, ''),
+    nationalDigits: Math.max(
+      6,
+      Number.parseInt(options.nationalDigits || configured.nationalDigits, 10) ||
+        configured.nationalDigits
+    ),
+    zipcode: String(options.zipcode || configured.zipcode),
+  };
 }
 
-function normalizePhoneParts(phone) {
-  const digits = String(phone || '')
-    .replace(/\D+/g, '')
-    .padEnd(10, '5')
-    .slice(0, 10);
+function normalizePhoneParts(phone, profile = DEFAULT_COUNTRY_PROFILE) {
+  const dialingCode = String(profile.dialingCode || DEFAULT_COUNTRY_PROFILE.dialingCode).replace(
+    /\D+/g,
+    ''
+  );
+  const nationalDigits = Math.max(
+    6,
+    Number.parseInt(profile.nationalDigits || DEFAULT_COUNTRY_PROFILE.nationalDigits, 10) || 9
+  );
+  let digits = String(phone || '').replace(/\D+/g, '');
+  if (digits.startsWith(dialingCode) && digits.length > nationalDigits) {
+    digits = digits.slice(dialingCode.length);
+  }
+  digits = digits.padEnd(nationalDigits, '5').slice(-nationalDigits);
   return {
-    phone: `+31${digits}`,
-    maskedPhone: `+31-${digits.slice(0, 2)}-${digits.slice(2)}`,
+    phone: `+${dialingCode}${digits}`,
+    maskedPhone: `+${dialingCode}-${digits.slice(0, 3)}-${digits.slice(3)}`,
   };
 }
 
@@ -535,10 +556,9 @@ function buildSignupApiPayload(data, options = {}) {
   const dd = normalizeDatePart(data.dd, '01');
   const mm = normalizeDatePart(data.mm, '01');
   const yyyy = normalizeYear(data.yyyy, '2001');
-  const { phone, maskedPhone } = normalizePhoneParts(data.phone);
-  const zipcode = String(
-    data.zipcode || options.zipcode || process.env.REG_ZIPCODE || '28001'
-  ).trim();
+  const countryProfile = resolveCountryProfile(data.country, options);
+  const { phone, maskedPhone } = normalizePhoneParts(data.phone, countryProfile);
+  const zipcode = String(data.zipcode || process.env.REG_ZIPCODE || countryProfile.zipcode).trim();
 
   return {
     query: options.query || '',
@@ -548,7 +568,7 @@ function buildSignupApiPayload(data, options = {}) {
     firstName: data.firstName,
     lastName: data.lastName,
     sex: options.sex || 'M',
-    countryId: resolveCountryId(data.country, options.countryId || 171),
+    countryId: countryProfile.countryId,
     cityName: data.city,
     address: data.address,
     zipcode,
@@ -669,6 +689,8 @@ module.exports = {
   applyAuthTokenCookie,
   buildSignupApiPayload,
   isSignupTurnstileBlockedError,
+  normalizePhoneParts,
+  resolveCountryProfile,
   validatePlayerSigninViaCdpTurnstile,
   registerPlayerViaApiWithCdpTurnstile,
   registerPlayerViaApi,

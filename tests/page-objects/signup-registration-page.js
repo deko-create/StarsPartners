@@ -970,6 +970,67 @@ class SignupRegistrationPage {
     ]);
   }
 
+  async selectPhoneCountryIfPresent(country, annotate) {
+    const wanted = String(country || '').trim();
+    if (!wanted) return false;
+
+    const container = this.getContainer();
+    const phoneInput = container
+      .locator(
+        'input[type="tel"]:visible, input[name="phone"]:visible, input[placeholder*="Phone" i]:visible'
+      )
+      .first();
+    if (!(await phoneInput.isVisible({ timeout: 500 }).catch(() => false))) return false;
+
+    const phoneRoot = phoneInput
+      .locator(
+        'xpath=ancestor::*[contains(concat(" ", normalize-space(@class), " "), " t-phone-mask-input ")][1]'
+      )
+      .first();
+    if (!(await phoneRoot.isVisible({ timeout: 500 }).catch(() => false))) return false;
+
+    const triggerCandidates = [
+      phoneRoot.locator('button:visible').first(),
+      phoneRoot.locator('[role="button"]:visible').first(),
+      phoneRoot.locator('[class*="country" i]:visible').first(),
+      phoneRoot.locator('[class*="flag" i]:visible').first(),
+      phoneRoot.locator('[class*="prefix" i]:visible').first(),
+    ];
+    let opened = false;
+    for (const trigger of triggerCandidates) {
+      if (!(await trigger.isVisible({ timeout: 250 }).catch(() => false))) continue;
+      opened = await trigger
+        .click({ timeout: 2000, force: true })
+        .then(() => true)
+        .catch(() => false);
+      if (opened) break;
+    }
+    if (!opened) return false;
+
+    await sleep(350);
+    const escaped = wanted.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const countryOption = this.page
+      .locator(
+        '[role="option"]:visible, [role="menuitem"]:visible, [class*="option" i]:visible, [class*="country" i]:visible, li:visible'
+      )
+      .filter({ hasText: new RegExp(`(?:^|\\s)${escaped}(?:\\s|$)`, 'i') })
+      .first();
+    if (!(await countryOption.isVisible({ timeout: 1500 }).catch(() => false))) {
+      await this.page.keyboard.press('Escape').catch(() => null);
+      return false;
+    }
+
+    const selected = await countryOption
+      .click({ timeout: 2500, force: true })
+      .then(() => true)
+      .catch(() => false);
+    if (selected) {
+      this.addNote(annotate, `Selected phone country in signup form: ${wanted}.`);
+      await sleep(350);
+    }
+    return selected;
+  }
+
   async fillStep1(data, opts = {}) {
     debugSignup('fillStep1:start');
     const { annotate, errorToast, signupTab } = opts;
@@ -1020,6 +1081,7 @@ class SignupRegistrationPage {
     debugSignup(`fillStep1:password=${String(passwordFilled)} count=${passwordCount}`);
     // Some brands render registration as a single step and require the phone
     // before the same submit button can become actionable.
+    await this.selectPhoneCountryIfPresent(data.country, annotate);
     await this.fillFirstVisible(
       ['input[type="tel"]', 'input[name="phone"]', 'input[placeholder*="Phone" i]'],
       data.phone
@@ -1105,12 +1167,12 @@ class SignupRegistrationPage {
           )
           .first();
         if (await phoneInput.isVisible({ timeout: 500 }).catch(() => false)) {
-          const phoneDigits = String(data.phone || '').replace(/\D+/g, '');
-          if (phoneDigits.length > 9) {
-            await phoneInput.fill(phoneDigits.slice(-9));
+          const currentPhone = await phoneInput.inputValue().catch(() => '');
+          if (!currentPhone && data.phone) {
+            await phoneInput.fill(String(data.phone));
             await phoneInput.press('Tab', { timeout: 1000 }).catch(() => null);
             await sleep(500);
-            this.addNote(annotate, 'Adjusted visible phone input to a 9-digit national number.');
+            this.addNote(annotate, 'Restored the full E.164 phone value after form validation.');
           }
         }
       }
@@ -1176,6 +1238,86 @@ class SignupRegistrationPage {
 
       if ((await step1Btn.isDisabled().catch(() => false)) && (await this.hasCaptchaGate())) {
         throw new Error('Cloudflare challenge detected (signup captcha gate).');
+      }
+
+      if (await step1Btn.isDisabled().catch(() => false)) {
+        const validationSignals = await container
+          .locator(
+            '[role="alert"]:visible, [aria-invalid="true"]:visible, [class*="error" i]:visible, [class*="invalid" i]:visible'
+          )
+          .evaluateAll((nodes) =>
+            nodes
+              .map((node) => (node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim())
+              .filter((value) => value.length > 2)
+              .slice(0, 8)
+          )
+          .catch(() => []);
+        const invalidFields = await container
+          .locator('input:visible')
+          .evaluateAll((nodes) =>
+            nodes
+              .filter(
+                (node) =>
+                  node.getAttribute('aria-invalid') === 'true' ||
+                  !node.checkValidity() ||
+                  /invalid|error/i.test(String(node.className || ''))
+              )
+              .map((node) => ({
+                name: node.getAttribute('name') || '',
+                type: node.getAttribute('type') || '',
+                placeholder: node.getAttribute('placeholder') || '',
+                validationMessage: node.validationMessage || '',
+              }))
+              .slice(0, 8)
+          )
+          .catch(() => []);
+        const phoneState = await container
+          .locator(
+            'input[type="tel"]:visible, input[name="phone"]:visible, input[placeholder*="Phone" i]:visible'
+          )
+          .first()
+          .evaluate((node) => ({
+            value: node.value || '',
+            ariaInvalid: node.getAttribute('aria-invalid') || '',
+            className: String(node.className || ''),
+            parentClassName: String((node.parentElement && node.parentElement.className) || ''),
+            ancestors: Array.from({ length: 5 }, (_, index) => {
+              let current = node;
+              for (let step = 0; step <= index; step += 1) current = current.parentElement;
+              return current
+                ? {
+                    tag: current.tagName,
+                    className: String(current.className || ''),
+                    text: String(current.innerText || '')
+                      .replace(/\s+/g, ' ')
+                      .trim()
+                      .slice(0, 160),
+                  }
+                : null;
+            }).filter(Boolean),
+            phoneRootChildren: Array.from(
+              (node.closest('.t-phone-mask-input') || node.parentElement).querySelectorAll('*')
+            )
+              .map((element) => ({
+                tag: element.tagName,
+                className: String(element.className || ''),
+                role: element.getAttribute('role') || '',
+                text: String(element.innerText || element.textContent || '')
+                  .replace(/\s+/g, ' ')
+                  .trim()
+                  .slice(0, 80),
+              }))
+              .filter((item) => item.className || item.role || item.text)
+              .slice(0, 24),
+          }))
+          .catch(() => null);
+        if (validationSignals.length > 0 || invalidFields.length > 0 || phoneState) {
+          throw new Error(
+            `Signup form validation keeps submit disabled: messages=${JSON.stringify(
+              validationSignals
+            )} fields=${JSON.stringify(invalidFields)} phone=${JSON.stringify(phoneState)}`
+          );
+        }
       }
 
       await expect(step1Btn).toBeEnabled({ timeout: 10000 });

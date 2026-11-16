@@ -30,6 +30,7 @@ const INFRA_BLOCKED_HINTS = [
   /stored player credentials .*invalid|stale player credential|test credential|user_account_blocked|account (?:is )?blocked/i,
   /expected authorized session|auth state|authorized .*login surface|http 401|unauthorized|\/api\/user\/preferences returned 401|session was not established/i,
   /temporarily unavailable|backend unavailable|transport negotiation failed|cancelled\/aborted before bootstrap/i,
+  /rate limit|too many requests|http 429|status[=: ]+429/i,
   /target page|context or browser has been closed|browser has been closed|test ended/i,
   /internet connection appears to be offline|net::err_internet_disconnected|net::err_network_changed|socket hang up/i,
   /net::err_failed|net::err_timed_out|net::err_blocked_by_orb|request failed/i,
@@ -923,16 +924,22 @@ async function closeModal(modal, page) {
   if (confirmationVisible || confirmationPromptVisible) {
     // Match visible button text, not only its accessible name: the signup X
     // icon may also be announced as "Close" and appears earlier in the DOM.
-    let confirmExit = page
+    const confirmationScope = confirmationVisible
+      ? confirmationDialog
+      : confirmationPrompt.locator(
+          'xpath=ancestor::*[self::div or self::section or @role="dialog"][1]'
+        );
+    let confirmExit = confirmationScope
       .locator('button:visible')
       .filter({
-        hasText: /^\s*(close|exit|leave|yes|закрыть|выйти|так|да|закрити|вийти)\s*$/i,
+        hasText:
+          /^\s*(close|close anyway|exit|exit registration|leave|leave anyway|yes|confirm|закрыть|выйти|подтвердить|так|да|закрити|вийти)\s*$/i,
       })
       .last();
     if (!(await confirmExit.isVisible({ timeout: 800 }).catch(() => false))) {
-      confirmExit = page
+      confirmExit = confirmationScope
         .getByRole('button', {
-          name: /^(close|exit|leave|yes|закрыть|выйти|так|да|закрити|вийти)$/i,
+          name: /^(close|close anyway|exit|exit registration|leave|leave anyway|yes|confirm|закрыть|выйти|подтвердить|так|да|закрити|вийти)$/i,
         })
         .filter({ visible: true })
         .last();
