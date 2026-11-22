@@ -15,7 +15,7 @@ fi
 
 docker exec "$container_name" mkdir -p "$job_dir"
 docker cp "$job_config" "$container_name:$job_dir/config.xml"
-docker exec "$container_name" chown -R jenkins:jenkins "$job_dir"
+docker exec --user root "$container_name" chown -R jenkins:jenkins "$job_dir"
 docker restart "$container_name" >/dev/null
 
 echo "Created Jenkins job: $job_name"
