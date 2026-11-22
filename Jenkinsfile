@@ -68,18 +68,17 @@ pipeline {
         stage('Runtime check') {
             steps {
                 sh '''
-                    npm install --global npm@12.2.3
                     node --version
-                    npm --version
+                    npx --yes npm@12.2.3 --version
                     test "$(node -p "process.versions.node.split('.')[0]")" = "24"
-                    test "$(npm --version | cut -d. -f1)" = "12"
+                    test "$(npx --yes npm@12.2.3 --version | cut -d. -f1)" = "12"
                 '''
             }
         }
 
         stage('Install dependencies') {
             steps {
-                sh 'npm ci'
+                sh 'npx --yes npm@12.2.3 ci'
             }
         }
 

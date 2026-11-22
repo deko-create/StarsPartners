@@ -13,7 +13,7 @@ services:
     environment:
       DOCKER_HOST: unix:///var/run/docker.sock
       JAVA_OPTS: >-
-        -Djenkins.install.runSetupWizard=true
+        -Djenkins.install.runSetupWizard=false
         -Dorg.jenkinsci.plugins.durabletask.BourneShellScript.LAUNCH_DIAGNOSTICS=true
     ports:
       - '127.0.0.1:8080:8080'
