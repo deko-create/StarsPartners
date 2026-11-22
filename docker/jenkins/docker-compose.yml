@@ -1,0 +1,33 @@
+name: starspartners-qa
+
+services:
+  jenkins:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: starspartners-jenkins:local
+    container_name: starspartners-jenkins
+    restart: unless-stopped
+    group_add:
+      - '${JENKINS_DOCKER_GID}'
+    environment:
+      DOCKER_HOST: unix:///var/run/docker.sock
+      JAVA_OPTS: >-
+        -Djenkins.install.runSetupWizard=true
+        -Dorg.jenkinsci.plugins.durabletask.BourneShellScript.LAUNCH_DIAGNOSTICS=true
+    ports:
+      - '127.0.0.1:8080:8080'
+      - '127.0.0.1:50000:50000'
+    volumes:
+      - jenkins_home:/var/jenkins_home
+      - '${JENKINS_DOCKER_SOCKET}:/var/run/docker.sock'
+    healthcheck:
+      test: ['CMD', 'curl', '--fail', '--silent', 'http://localhost:8080/login']
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+
+volumes:
+  jenkins_home:
+    name: starspartners_jenkins_home

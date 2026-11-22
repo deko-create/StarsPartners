@@ -1,0 +1,12 @@
+allure-jenkins-plugin
+ansicolor
+configuration-as-code
+credentials-binding
+docker-workflow
+git
+github
+htmlpublisher
+pipeline-stage-view
+timestamper
+workflow-aggregator
+ws-cleanup
