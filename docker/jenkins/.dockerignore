@@ -1,3 +1,5 @@
 *
 !Dockerfile
 !plugins.txt
+!init.groovy.d/
+!init.groovy.d/*.groovy

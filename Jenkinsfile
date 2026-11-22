@@ -1,11 +1,5 @@
 pipeline {
-    agent {
-        docker {
-            image 'mcr.microsoft.com/playwright:v1.64.1-noble'
-            args '--init --ipc=host'
-            reuseNode true
-        }
-    }
+    agent { label 'mac-vpn' }
 
     parameters {
         choice(
@@ -25,8 +19,8 @@ pipeline {
         )
         choice(
             name: 'BROWSER',
-            choices: ['chromium', 'webkit'],
-            description: 'Playwright browser'
+            choices: ['chromium'],
+            description: 'Нативный Google Chrome через CDP'
         )
         booleanParam(
             name: 'USE_QA_ENV',
@@ -45,8 +39,9 @@ pipeline {
         HUSKY = '0'
         PW_REPORT_ALLURE = '1'
         ALLURE_RESULTS_DIR = 'allure-results'
-        PW_CDP_REUSE_CONTEXT = '0'
-        PW_USE_CHROME_CHANNEL = '0'
+        PW_CDP_REUSE_CONTEXT = '1'
+        PW_USE_CHROME_CHANNEL = '1'
+        PW_CDP_CHROME_PATH = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
     }
 
     options {
@@ -70,6 +65,7 @@ pipeline {
                 sh '''
                     node --version
                     npx --yes npm@12.2.3 --version
+                    test -x "$PW_CDP_CHROME_PATH"
                     test "$(node -p "process.versions.node.split('.')[0]")" = "24"
                     test "$(npx --yes npm@12.2.3 --version | cut -d. -f1)" = "12"
                 '''

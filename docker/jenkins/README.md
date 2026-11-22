@@ -1,7 +1,8 @@
 # StarsPartners QA Jenkins
 
 This local Jenkins installation runs the controller in Docker and executes the
-Playwright pipeline in the official Playwright image.
+Playwright pipeline on the native macOS `mac-vpn` agent. The native agent uses
+the host VPN route and Google Chrome through the project's CDP runner.
 
 ## Start
 
@@ -22,6 +23,12 @@ bootstrap the versioned Pipeline job:
 npm run jenkins:bootstrap
 ```
 
+Install and start the native macOS agent:
+
+```bash
+npm run jenkins:agent:install
+```
+
 The first build defaults to `DRY_RUN=true` and `USE_QA_ENV=false`.
 
 ## QA secrets
@@ -38,6 +45,9 @@ npm run jenkins:status
 npm run jenkins:logs
 npm run jenkins:password
 npm run jenkins:bootstrap
+npm run jenkins:agent:install
+npm run jenkins:agent:status
+npm run jenkins:agent:stop
 npm run jenkins:stop
 ```
 
