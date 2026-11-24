@@ -45,15 +45,24 @@ function normalizeApiBody(body) {
   return body && typeof body === 'object' ? body : null;
 }
 
-function shouldTryCdpTurnstileFallback({ baseUrl, status, body }) {
+function shouldTryCdpTurnstileFallback({ baseUrl, status, body, page }) {
   const enabledByEnv = process.env.PW_SIGNUP_CDP_FALLBACK === '1';
   const disabledByEnv = process.env.PW_SIGNUP_CDP_FALLBACK === '0';
   if (disabledByEnv) return false;
   const cdpHost = isNixHost(baseUrl) || isStarzinoHost(baseUrl);
+  const reusableCdpSession = Boolean(
+    page &&
+    (process.env.PW_CDP_REUSE_CONTEXT === '1' ||
+      process.env.PW_CDP_ENDPOINT ||
+      process.env.PW_CDP_URL)
+  );
   // When explicitly enabled, allow CDP fallback for any non-200 signup response.
   // This is needed for brands where WAF/challenge returns 4xx/5xx HTML instead of
   // RECAPTCHA_NOT_VALID JSON payloads.
   if (enabledByEnv && status !== 200) return true;
+  // A WAF HTML 403 is exactly where the already-open native Chrome session is
+  // valuable: it retains the user's VPN path and Cloudflare clearance cookies.
+  if (reusableCdpSession && status === 403) return true;
   if (!enabledByEnv && !cdpHost) return false;
   if (cdpHost && status !== 200) return true;
   if (status !== 400) return false;
@@ -61,6 +70,134 @@ function shouldTryCdpTurnstileFallback({ baseUrl, status, body }) {
   const payload = normalizeApiBody(body);
   const code = payload && payload.errorCode ? String(payload.errorCode).toUpperCase() : '';
   return code === 'RECAPTCHA_NOT_VALID';
+}
+
+async function dismissSignupPromoFrames(page) {
+  const promoPattern =
+    /pick your reward|werde teil von ax\s*bet|neue plattform,? neue emotionen|mehr erfahren/i;
+  for (const frame of page.frames().filter((candidate) => candidate !== page.mainFrame())) {
+    const visible = await frame
+      .getByText(promoPattern)
+      .first()
+      .isVisible({ timeout: 250 })
+      .catch(() => false);
+    if (!visible) continue;
+    const close = frame
+      .locator('button')
+      .filter({ hasNotText: /claim|mehr erfahren|learn more|register|sign up/i })
+      .first();
+    if (await close.isVisible({ timeout: 250 }).catch(() => false)) {
+      await close.click({ timeout: 1500, force: true }).catch(() => null);
+      await delay(350);
+    }
+    const stillVisible = await frame
+      .getByText(promoPattern)
+      .first()
+      .isVisible({ timeout: 250 })
+      .catch(() => false);
+    if (!stillVisible) continue;
+    const element = await frame.frameElement().catch(() => null);
+    if (element) await element.evaluate((node) => node.remove()).catch(() => null);
+  }
+}
+
+async function parseApiResponse(response) {
+  const status = response.status();
+  const contentType = response.headers()['content-type'] || '';
+  const body = contentType.includes('application/json')
+    ? await response.json().catch(() => null)
+    : await response.text().catch(() => null);
+  return { status, body };
+}
+
+async function registerPlayerViaCurrentContextTurnstile({ page, data, baseUrl, options }) {
+  const context = page && page.context ? page.context() : null;
+  if (!context) return null;
+
+  const timeoutMs = Number.parseInt(
+    process.env.PW_SIGNUP_CDP_TIMEOUT_MS || String(DEFAULT_CDP_TIMEOUT_MS),
+    10
+  );
+  const signupPage = await context.newPage();
+  const signupUrl = new URL('/#signup', baseUrl).toString();
+  const url = new URL('/api/auth/signup', baseUrl).toString();
+  try {
+    await signupPage.goto(signupUrl, {
+      waitUntil: 'domcontentloaded',
+      timeout: Math.min(timeoutMs, 45_000),
+    });
+    await delay(1200);
+    await dismissSignupPromoFrames(signupPage);
+    await clickFirstVisible(signupPage, [
+      '[data-testid="signup-button"]',
+      'button:has-text("Sign Up")',
+      'button:has-text("Sign up")',
+      'button:has-text("Register")',
+    ]).catch(() => null);
+    await delay(500);
+    await fillLoginCredentials(signupPage, data);
+
+    const turnstileToken = await waitForTurnstileToken(signupPage, {
+      timeoutMs: Math.max(10_000, timeoutMs - 25_000),
+      actionSelectors: [
+        '[data-testid="signup-button"]',
+        'button:has-text("Sign Up")',
+        'button:has-text("Sign up")',
+        'button:has-text("Register")',
+        'button[type="submit"]',
+      ],
+    });
+    if (!turnstileToken) {
+      throw new Error('Current Chrome context could not obtain Turnstile token.');
+    }
+
+    const payload = buildSignupApiPayload(data, options);
+    payload['g-recaptcha-response'] = turnstileToken;
+    payload['g-recaptcha-ver'] = 'turnstile-invisible';
+    const response = await signupPage.request.post(url, {
+      data: payload,
+      headers: {
+        origin: new URL(baseUrl).origin,
+        referer: signupUrl,
+        'content-type': 'application/json',
+        accept: 'application/json, text/plain, */*',
+      },
+      failOnStatusCode: false,
+      timeout: Math.min(timeoutMs, 45_000),
+    });
+    const { status, body } = await parseApiResponse(response);
+    const ok =
+      status === 200 &&
+      body &&
+      typeof body === 'object' &&
+      typeof body.token === 'string' &&
+      body.token.length >= 10 &&
+      Number.isFinite(Number(body.userId)) &&
+      Number(body.userId) > 0;
+    return {
+      ok,
+      status,
+      url,
+      payload,
+      body,
+      source: 'current-cdp-context-turnstile',
+      turnstileTokenLen: turnstileToken.length,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      status: 0,
+      url,
+      payload: null,
+      body: {
+        errorCode: 'CURRENT_CDP_CONTEXT_FALLBACK_FAILED',
+        errorMessage: String(err && err.message ? err.message : err),
+      },
+      source: 'current-cdp-context-turnstile',
+    };
+  } finally {
+    await signupPage.close().catch(() => null);
+  }
 }
 
 function resolveChromeExecutable() {
@@ -641,8 +778,32 @@ async function registerPlayerViaApi({ page, request, data, baseUrl = DEFAULT_BAS
     body,
   };
 
-  if (ok || !shouldTryCdpTurnstileFallback({ baseUrl, status, body })) {
+  if (ok || !shouldTryCdpTurnstileFallback({ baseUrl, status, body, page })) {
     return initialResult;
+  }
+
+  const canReuseCurrentContext = Boolean(
+    page &&
+    (process.env.PW_CDP_REUSE_CONTEXT === '1' ||
+      process.env.PW_CDP_ENDPOINT ||
+      process.env.PW_CDP_URL)
+  );
+  const currentContextResult = canReuseCurrentContext
+    ? await registerPlayerViaCurrentContextTurnstile({
+        page,
+        data,
+        baseUrl,
+        options,
+      })
+    : null;
+  if (currentContextResult && currentContextResult.ok) return currentContextResult;
+  const shouldSpawnIsolatedChrome =
+    process.env.PW_SIGNUP_CDP_FALLBACK === '1' || isNixHost(baseUrl) || isStarzinoHost(baseUrl);
+  if (currentContextResult && !shouldSpawnIsolatedChrome) {
+    return {
+      ...initialResult,
+      currentContextFallback: currentContextResult,
+    };
   }
 
   const cdpResult = await registerPlayerViaApiWithCdpTurnstile({
@@ -664,6 +825,7 @@ async function registerPlayerViaApi({ page, request, data, baseUrl = DEFAULT_BAS
   if (cdpResult && cdpResult.ok) return cdpResult;
   return {
     ...initialResult,
+    currentContextFallback: currentContextResult,
     cdpFallback: cdpResult,
   };
 }

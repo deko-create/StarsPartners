@@ -1720,6 +1720,8 @@ async function inspectDepositMethodSurface(container, page, methodLabel) {
 }
 
 async function clickMethod(method, container, page) {
+  await dismissOverlays(page).catch(() => null);
+  await waitForUiSettled(page, 350).catch(() => null);
   let activeContainer = await resolveFreshDepositContainer(page, container);
   if (!activeContainer) {
     return {
@@ -1741,6 +1743,9 @@ async function clickMethod(method, container, page) {
   let clickSucceeded = false;
 
   for (let attempt = 1; attempt <= 3; attempt += 1) {
+    await dismissOverlays(page).catch(() => null);
+    activeContainer =
+      (await resolveFreshDepositContainer(page, activeContainer)) || activeContainer;
     const resolved = await resolvePaymentMethodTarget(page, activeContainer, method);
     activeContainer = resolved.container || activeContainer;
     if (!resolved.target) {
@@ -2490,6 +2495,7 @@ test.describe('Deposit non-destructive checks', () => {
         }
         let result = null;
         try {
+          await dismissOverlays(page);
           result = await withStepTimeout(
             clickMethod(method, container, page),
             DEPOSIT_METHOD_STEP_TIMEOUT_MS,

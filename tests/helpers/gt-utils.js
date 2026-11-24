@@ -649,31 +649,38 @@ async function dismissOverlays(page) {
     })
     .catch(() => null);
 
-  // Some brands inject the "Pick Your Reward" promo as a delayed cross-origin iframe.
-  // Try its close action first. If the third-party widget ignores the click, remove only
-  // that confirmed reward iframe from the test page so it cannot intercept later actions.
+  // Some brands inject a delayed cross-origin promo iframe. Besides the rewards
+  // widget, likes.bet currently receives an AX.BET acquisition creative. Both can
+  // cover the whole viewport and silently redirect clicks away from the tested
+  // route. Try the widget close action first. If it ignores the click, remove only
+  // a positively identified promo iframe so casino/sports iframes remain untouched.
   // Never hide arbitrary iframes: casino and sports surfaces legitimately use them.
   for (let attempt = 0; attempt < 4; attempt += 1) {
-    let rewardFrameHandled = false;
+    let promoFrameHandled = false;
     const childFrames = page.frames().filter((candidate) => candidate !== page.mainFrame());
     const frameMatches = await Promise.all(
       childFrames.map(async (frame) => ({
         frame,
-        rewardPromptVisible: await frame
-          .getByText(/pick your reward/i)
+        promoPromptVisible: await frame
+          .getByText(
+            /pick your reward|werde teil von ax\s*bet|neue plattform,? neue emotionen|mehr erfahren/i
+          )
           .first()
           .isVisible({ timeout: 300 })
           .catch(() => false),
       }))
     );
-    for (const { frame, rewardPromptVisible } of frameMatches) {
-      if (!rewardPromptVisible) continue;
+    for (const { frame, promoPromptVisible } of frameMatches) {
+      if (!promoPromptVisible) continue;
 
-      rewardFrameHandled = true;
+      promoFrameHandled = true;
       const frameCloseCandidates = [
         frame.getByRole('button', { name: /close|dismiss|no thanks/i }).first(),
         frame.locator('[aria-label*="close" i], [data-testid*="close" i]').first(),
-        frame.locator('button').filter({ hasNotText: /claim/i }).first(),
+        frame
+          .locator('button')
+          .filter({ hasNotText: /claim|mehr erfahren|learn more|register|sign up/i })
+          .first(),
       ];
       for (const closeButton of frameCloseCandidates) {
         const visible = await closeButton.isVisible({ timeout: 300 }).catch(() => false);
@@ -681,7 +688,9 @@ async function dismissOverlays(page) {
         await closeButton.click({ timeout: 1500, force: true }).catch(() => null);
         await waitForUiSettled(page, 350).catch(() => null);
         const stillVisible = await frame
-          .getByText(/pick your reward/i)
+          .getByText(
+            /pick your reward|werde teil von ax\s*bet|neue plattform,? neue emotionen|mehr erfahren/i
+          )
           .first()
           .isVisible({ timeout: 250 })
           .catch(() => false);
@@ -689,7 +698,9 @@ async function dismissOverlays(page) {
       }
 
       const stillVisible = await frame
-        .getByText(/pick your reward/i)
+        .getByText(
+          /pick your reward|werde teil von ax\s*bet|neue plattform,? neue emotionen|mehr erfahren/i
+        )
         .first()
         .isVisible({ timeout: 250 })
         .catch(() => false);
@@ -700,7 +711,7 @@ async function dismissOverlays(page) {
         }
       }
     }
-    if (rewardFrameHandled || attempt === 3) break;
+    if (promoFrameHandled || attempt === 3) break;
     await waitForUiSettled(page, 250).catch(() => null);
   }
 

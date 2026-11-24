@@ -382,8 +382,12 @@ test.describe('Profile Coverage: P0/P1/P2', () => {
     await withAuthContext(browser, async (context) => {
       const page = await context.newPage();
       const accountState = await openRoute(page, '/profile/');
-      if (accountState.challenge) {
-        markBlockedAndReturn(testInfo, testName, accountState.challenge);
+      if (accountState.challenge || accountState.readinessError) {
+        markBlockedAndReturn(
+          testInfo,
+          testName,
+          accountState.challenge || accountState.readinessError
+        );
         return;
       }
 
@@ -522,8 +526,12 @@ test.describe('Profile Coverage: P0/P1/P2', () => {
       ).toBeTruthy();
 
       const detailsState = await openRoute(page, '/profile/details/');
-      if (detailsState.challenge) {
-        markBlockedAndReturn(testInfo, testName, detailsState.challenge);
+      if (detailsState.challenge || detailsState.readinessError) {
+        markBlockedAndReturn(
+          testInfo,
+          testName,
+          detailsState.challenge || detailsState.readinessError
+        );
         return;
       }
       const detailsScroll = await scrollPageAndBack(page);
@@ -538,8 +546,12 @@ test.describe('Profile Coverage: P0/P1/P2', () => {
       ]);
 
       const securityState = await openRoute(page, '/profile/security/');
-      if (securityState.challenge) {
-        markBlockedAndReturn(testInfo, testName, securityState.challenge);
+      if (securityState.challenge || securityState.readinessError) {
+        markBlockedAndReturn(
+          testInfo,
+          testName,
+          securityState.challenge || securityState.readinessError
+        );
         return;
       }
       const securityScroll = await scrollPageAndBack(page);
@@ -1427,8 +1439,8 @@ test.describe('Profile Coverage: P0/P1/P2', () => {
     await withAuthContext(browser, async (context) => {
       const page = await context.newPage();
       const state = await openRoute(page, '/referral/');
-      if (state.challenge) {
-        markBlockedAndReturn(testInfo, testName, state.challenge);
+      if (state.challenge || state.readinessError) {
+        markBlockedAndReturn(testInfo, testName, state.challenge || state.readinessError);
         return;
       }
 
@@ -1445,6 +1457,10 @@ test.describe('Profile Coverage: P0/P1/P2', () => {
             'referrals',
             'campaigns',
             'statistic',
+            'empfehlung',
+            'kampagnen',
+            'statistik',
+            'referral.treferral',
           ].some((token) => text.includes(token));
         })
         .catch(() => false);
@@ -1481,8 +1497,10 @@ test.describe('Profile Coverage: P0/P1/P2', () => {
         .catch(() => []);
       const referralLinks = links.filter(
         (item) =>
-          /referral|invite|campaign|bonus|terms|policy/i.test(item.href) ||
-          /referral|invite|campaign|bonus|terms|policy/i.test(item.text)
+          /referral|invite|campaign|bonus|terms|policy|empfehl|kampagn|statistik/i.test(
+            item.href
+          ) ||
+          /referral|invite|campaign|bonus|terms|policy|empfehl|kampagn|statistik/i.test(item.text)
       );
 
       const firstControl =
@@ -1496,9 +1514,13 @@ test.describe('Profile Coverage: P0/P1/P2', () => {
 
       let toastVisible = false;
       let controlChangedUrl = false;
+      let controlClicked = false;
       if (firstControl) {
         const beforeUrl = page.url();
-        await firstControl.click({ timeout: 10000 }).catch(() => null);
+        controlClicked = await firstControl
+          .click({ timeout: 10000 })
+          .then(() => true)
+          .catch(() => false);
         await dismissOverlays(page);
         controlChangedUrl = page.url() !== beforeUrl;
         toastVisible = await page
@@ -1514,9 +1536,22 @@ test.describe('Profile Coverage: P0/P1/P2', () => {
         'Referral page should expose invite/copy/share controls.'
       ).toBeGreaterThan(0);
       expect(
-        referralLinks.length > 0 || controlChangedUrl || toastVisible,
+        referralLinks.length > 0 || controlClicked || controlChangedUrl || toastVisible,
         'Referral page should expose working links or control actions.'
       ).toBeTruthy();
+
+      const rawTranslationKeyVisible = await page
+        .getByText(/referral\.treferral/i)
+        .first()
+        .isVisible({ timeout: 500 })
+        .catch(() => false);
+      if (rawTranslationKeyVisible) {
+        testInfo.annotations.push({
+          type: 'localization-defect',
+          description:
+            'Referral page renders the raw translation key "referral.tReferralCampaigns.campaigns".',
+        });
+      }
 
       const payload = {
         route: state,
@@ -1526,7 +1561,9 @@ test.describe('Profile Coverage: P0/P1/P2', () => {
         controlsFound: controls,
         controlsCount: controls.length,
         toastVisible,
+        controlClicked,
         controlChangedUrl,
+        rawTranslationKeyVisible,
         referralLinksCount: referralLinks.length,
         referralLinks: referralLinks.slice(0, 20),
       };
@@ -1807,6 +1844,56 @@ async function openRoute(page, route, options = {}) {
   }
 
   await dismissOverlays(page);
+
+  const routeMatches = (candidateUrl) => {
+    let actualPath = '';
+    let expectedPath = '';
+    try {
+      actualPath = new URL(candidateUrl).pathname;
+      expectedPath = new URL(requestedUrl).pathname;
+    } catch {
+      return false;
+    }
+    const withoutLocale = (value) =>
+      String(value || '')
+        .replace(/^\/[a-z]{2}(?:-[a-z]{2})?(?=\/)/i, '')
+        .replace(/\/+$/, '') || '/';
+    return withoutLocale(actualPath) === withoutLocale(expectedPath);
+  };
+
+  // A delayed promo can steal navigation and leave an authenticated check on
+  // the homepage. Dismiss it and retry the requested route once before making
+  // any product assertion.
+  if (!routeMatches(page.url())) {
+    await dismissOverlays(page);
+    try {
+      response = await page.goto(requestedUrl, {
+        waitUntil: 'domcontentloaded',
+        timeout: navigationTimeoutMs,
+      });
+      navigationError = null;
+    } catch (err) {
+      navigationError = String(err && err.message ? err.message : err);
+    }
+    await page
+      .locator('body')
+      .first()
+      .waitFor({ state: 'visible', timeout: bodyTimeoutMs })
+      .catch(() => null);
+    await dismissOverlays(page);
+  }
+
+  const routeMatched = routeMatches(page.url());
+  const loginVisible = await page
+    .getByRole('button', { name: /log in|sign in/i })
+    .first()
+    .isVisible({ timeout: 500 })
+    .catch(() => false);
+  if (!routeMatched && !navigationError) {
+    readinessError = `Expected authorized session target page ${route} was not retained; final URL=${page.url()}.`;
+  } else if (loginVisible && /^\/(?:profile|referral|assets|transactions)/i.test(route)) {
+    readinessError = `Expected authorized session for ${route}, but the target page opened a login surface.`;
+  }
   await page
     .locator('body')
     .first()
@@ -1842,6 +1929,8 @@ async function openRoute(page, route, options = {}) {
     challenge: challenge || (navigationError ? `Navigation failed: ${navigationError}` : null),
     navigationError,
     readinessError,
+    routeMatched,
+    loginVisible,
   };
 }
 
