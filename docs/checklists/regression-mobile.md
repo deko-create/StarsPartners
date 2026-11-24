@@ -4,6 +4,8 @@
 
 Полный mobile regression для `gt.bet`, `likes.bet`, `booms.bet`, `nix.bet`, `starzino.com`, `igo.bet`, `chacha.bet` и `casho.bet`. Чеклист основан на тестах и последних отчётах проекта, product-remediation документах и исследовательском проходе 11 ноября 2026 года: 32 mobile route-проверки (`/`, `/casino/`, `/livecasino/`, `/sports/`) по восьми брендам плюс сравнение с desktop-проходом.
 
+Responsive-проверки на трёх наиболее распространённых мобильных viewport вынесены в отдельный [чек-лист разрешений Mobile](./regression-mobile-screen-sizes.md).
+
 ## Устройства и правила
 
 - Минимальная матрица: Android Chrome `390 × 844`, iPhone Safari `390 × 844`, малый экран `360 × 800`.
