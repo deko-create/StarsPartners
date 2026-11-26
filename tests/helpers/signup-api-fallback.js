@@ -191,12 +191,12 @@ async function registerPlayerViaCurrentContextTurnstile({ page, data, baseUrl, o
       payload: null,
       body: {
         errorCode: 'CURRENT_CDP_CONTEXT_FALLBACK_FAILED',
-        errorMessage: String(err && err.message ? err.message : err),
+        errorMessage: String(err instanceof Error ? err.message : err),
       },
       source: 'current-cdp-context-turnstile',
     };
   } finally {
-    await signupPage.close().catch(() => null);
+    await Promise.race([signupPage.close().catch(() => null), delay(5_000)]);
   }
 }
 
@@ -320,7 +320,7 @@ async function waitForTurnstileToken(page, options = {}) {
     if (executeTurnstile) {
       await page
         .evaluate(() => {
-          const ts = window.turnstile;
+          const ts = /** @type {{ execute?: () => void } | undefined} */ (window['turnstile']);
           if (!ts || typeof ts.execute !== 'function') return;
           try {
             ts.execute();
@@ -621,7 +621,7 @@ async function validatePlayerSigninViaCdpTurnstile({ data, baseUrl = DEFAULT_BAS
       payload: null,
       body: {
         errorCode: 'CDP_SIGNIN_VALIDATION_FAILED',
-        errorMessage: String(err && err.message ? err.message : err),
+        errorMessage: String(err instanceof Error ? err.message : err),
       },
       source: 'cdp-signin-turnstile',
     };
@@ -676,7 +676,8 @@ function normalizePhoneParts(phone, profile = DEFAULT_COUNTRY_PROFILE) {
   );
   const nationalDigits = Math.max(
     6,
-    Number.parseInt(profile.nationalDigits || DEFAULT_COUNTRY_PROFILE.nationalDigits, 10) || 9
+    Number.parseInt(String(profile.nationalDigits || DEFAULT_COUNTRY_PROFILE.nationalDigits), 10) ||
+      9
   );
   let digits = String(phone || '').replace(/\D+/g, '');
   if (digits.startsWith(dialingCode) && digits.length > nationalDigits) {
@@ -797,8 +798,13 @@ async function registerPlayerViaApi({ page, request, data, baseUrl = DEFAULT_BAS
       })
     : null;
   if (currentContextResult && currentContextResult.ok) return currentContextResult;
+  // A failed attempt inside an already verified native-Chrome context must not
+  // silently open a clean Chrome profile: the new profile has none of the
+  // Cloudflare clearance that made the current session usable. Preserve the
+  // diagnostic and let the bounded UI registration path run in the same page.
   const shouldSpawnIsolatedChrome =
-    process.env.PW_SIGNUP_CDP_FALLBACK === '1' || isNixHost(baseUrl) || isStarzinoHost(baseUrl);
+    !currentContextResult &&
+    (process.env.PW_SIGNUP_CDP_FALLBACK === '1' || isNixHost(baseUrl) || isStarzinoHost(baseUrl));
   if (currentContextResult && !shouldSpawnIsolatedChrome) {
     return {
       ...initialResult,

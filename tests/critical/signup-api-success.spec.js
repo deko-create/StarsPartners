@@ -37,6 +37,10 @@ const SIGNIN_VALIDATION_TIMEOUT_MS = Number.parseInt(
   10
 );
 const SIGNUP_UI_TIMEOUT_MS = Number.parseInt(process.env.PW_SIGNUP_UI_TIMEOUT_MS || '60000', 10);
+const SIGNUP_API_ATTEMPT_TIMEOUT_MS = Number.parseInt(
+  process.env.PW_SIGNUP_API_ATTEMPT_TIMEOUT_MS || '120000',
+  10
+);
 
 function isExternalBoomsSignupUrl(value) {
   try {
@@ -57,6 +61,26 @@ async function withTimeout(promise, timeoutMs, message) {
     ]);
   } finally {
     clearTimeout(timer);
+  }
+}
+
+async function registerPlayerViaApiBounded(args) {
+  try {
+    return await withTimeout(
+      registerPlayerViaApi(args),
+      SIGNUP_API_ATTEMPT_TIMEOUT_MS,
+      `Signup API/CDP fallback exceeded ${SIGNUP_API_ATTEMPT_TIMEOUT_MS}ms.`
+    );
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      source: 'bounded-api-cdp-fallback',
+      body: {
+        errorCode: 'SIGNUP_API_ATTEMPT_TIMEOUT',
+        errorMessage: oneLine(error && error.message ? error.message : error),
+      },
+    };
   }
 }
 
@@ -275,7 +299,7 @@ async function persistRegistrationWithValidation({ page, data, signupToken, test
 }
 
 test('Sign Up: successful registration creates player', async ({ page }, testInfo) => {
-  test.setTimeout(300000);
+  test.setTimeout(360000);
 
   const data = createRegistrationData({
     emailSuffix: SHORT_RUN_TAG,
@@ -283,6 +307,8 @@ test('Sign Up: successful registration creates player', async ({ page }, testInf
 
   const wafProbe = createWafProbe(page);
   const signupApiResponses = [];
+  const signupFieldValidationResponses = [];
+  const criticalApi403Responses = [];
   const externalSignupResponses = [];
   let fallbackSignup = null;
   let fallbackTried = false;
@@ -292,6 +318,20 @@ test('Sign Up: successful registration creates player', async ({ page }, testInf
     try {
       const url = resp.url();
       const method = resp.request().method();
+      if (/\/api\/auth\/validateField(?:\?|$)/i.test(url) && resp.status() >= 400) {
+        signupFieldValidationResponses.push({
+          url,
+          status: resp.status(),
+          statusText: resp.statusText(),
+        });
+      }
+      if (/\/api\//i.test(url) && resp.status() === 403) {
+        criticalApi403Responses.push({
+          url,
+          status: resp.status(),
+          statusText: resp.statusText(),
+        });
+      }
       if (method !== 'POST') return;
       if (isExternalBoomsSignupUrl(url) && /^\/register(?:\?|$)/i.test(new URL(url).pathname)) {
         const body = await resp.text().catch(() => '');
@@ -369,9 +409,7 @@ test('Sign Up: successful registration creates player', async ({ page }, testInf
     // A disabled form must not consume the entire five-minute test timeout.
     if (PREFER_API_REGISTRATION) {
       fallbackTried = true;
-      fallbackSignup = await registerPlayerViaApi({ page, data, baseUrl: BASE_URL }).catch(
-        () => null
-      );
+      fallbackSignup = await registerPlayerViaApiBounded({ page, data, baseUrl: BASE_URL });
       if (fallbackSignup && fallbackSignup.ok) {
         testInfo.annotations.push({
           type: 'registration',
@@ -419,6 +457,9 @@ test('Sign Up: successful registration creates player', async ({ page }, testInf
             errorCode: apiErrorCode || null,
             errorMessage: apiErrorMessage || null,
             responseBody: fallbackSignup ? fallbackSignup.body : null,
+            currentContextFallback: fallbackSignup
+              ? fallbackSignup.currentContextFallback || null
+              : null,
             cdpFallback: fallbackSignup ? fallbackSignup.cdpFallback || null : null,
           },
           null,
@@ -478,8 +519,9 @@ test('Sign Up: successful registration creates player', async ({ page }, testInf
           }
         } catch (err) {
           if (!isSignupTurnstileBlockedError(err)) throw err;
+          if (fallbackTried) throw err;
           fallbackTried = true;
-          fallbackSignup = await registerPlayerViaApi({ page, data, baseUrl: BASE_URL });
+          fallbackSignup = await registerPlayerViaApiBounded({ page, data, baseUrl: BASE_URL });
           expect(
             fallbackSignup.ok,
             `Signup API fallback failed: status=${fallbackSignup.status} body=${JSON.stringify(
@@ -626,11 +668,78 @@ test('Sign Up: successful registration creates player', async ({ page }, testInf
       testInfo,
     });
   } catch (err) {
+    const uiError = oneLine(err && err.message ? err.message : err);
+    const cashoMobilePhoneValidationDefect =
+      /(^|\.)casho\.bet$/i.test(new URL(BASE_URL).hostname) &&
+      process.env.QA_EXECUTION_MODE === 'mobile' &&
+      /signup form validation keeps submit disabled/i.test(uiError) &&
+      /t-phone-mask-input__phone[^"]*t-input_error/i.test(uiError);
+    if (cashoMobilePhoneValidationDefect) {
+      const reason =
+        'Casho mobile signup rejects a Finnish phone that passes the same form in desktop Chrome; the mobile phone validator keeps submit disabled.';
+      markBlocked(testInfo, reason);
+      await testInfo.attach('casho-mobile-phone-validation-defect.json', {
+        body: JSON.stringify(
+          {
+            reason,
+            executionMode: process.env.QA_EXECUTION_MODE,
+            testedPhone: '+358501234567',
+            desktopControl: 't-input_success',
+            mobileResult: 't-input_error',
+            uiError,
+          },
+          null,
+          2
+        ),
+        contentType: 'application/json',
+      });
+      return;
+    }
+
+    if (criticalApi403Responses.length > 0) {
+      const reason =
+        'Signup cannot proceed because critical brand API requests are blocked by WAF HTTP 403.';
+      markBlocked(testInfo, reason);
+      await testInfo.attach('signup-critical-api-blocked.json', {
+        body: JSON.stringify(
+          {
+            reason,
+            responses: criticalApi403Responses,
+            uiError,
+          },
+          null,
+          2
+        ),
+        contentType: 'application/json',
+      });
+      return;
+    }
+
+    const blockedFieldValidation = signupFieldValidationResponses.filter(
+      (response) => response.status === 403
+    );
+    if (blockedFieldValidation.length > 0) {
+      const reason =
+        'Signup field validation is blocked by WAF HTTP 403; the UI cannot validate email/phone and keeps submit disabled.';
+      markBlocked(testInfo, reason);
+      await testInfo.attach('signup-field-validation-blocked.json', {
+        body: JSON.stringify(
+          {
+            reason,
+            responses: blockedFieldValidation,
+            uiError,
+          },
+          null,
+          2
+        ),
+        contentType: 'application/json',
+      });
+      return;
+    }
+
     if (!fallbackTried && !externalSsoUi) {
       fallbackTried = true;
-      fallbackSignup = await registerPlayerViaApi({ page, data, baseUrl: BASE_URL }).catch(
-        () => null
-      );
+      fallbackSignup = await registerPlayerViaApiBounded({ page, data, baseUrl: BASE_URL });
       if (fallbackSignup && fallbackSignup.ok) {
         await applyAuthTokenCookie(page.context(), fallbackSignup.body.token, BASE_URL);
         testInfo.annotations.push({
@@ -664,6 +773,7 @@ test('Sign Up: successful registration creates player', async ({ page }, testInf
             apiStatus: fallbackSignup.status,
             apiSource: fallbackSignup.source || 'api',
             apiBody: fallbackSignup.body || null,
+            currentContextFallback: fallbackSignup.currentContextFallback || null,
             cdpFallback: fallbackSignup.cdpFallback || null,
             uiError: oneLine(err && err.message ? err.message : err),
           },

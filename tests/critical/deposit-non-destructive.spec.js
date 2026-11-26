@@ -1085,7 +1085,13 @@ async function collectPaymentMethods(container) {
   const isNoiseMethodLabel = (source) => {
     const text = String(source || '').toLowerCase();
     if (!text) return false;
-    if (text.includes('please choose your payment method')) return true;
+    if (
+      /please choose your payment method|bitte w[aä]hle deine zahlungsmethode|choisissez votre mode de paiement|elige[^|]{0,40}m[eé]todo de pago|seleziona[^|]{0,40}metodo di pagamento/i.test(
+        text
+      )
+    )
+      return true;
+    if (/^(popular|fastest|beliebt|schnellste|populaire|rapide)$/i.test(text.trim())) return true;
     if (text.includes('fund-payment-method__title')) return true;
 
     // Keep real tiles (grid-item / deposit-method-*), filter only wrapper/grid containers.
@@ -1129,6 +1135,9 @@ async function collectPaymentMethods(container) {
             (img) => img.complete && img.naturalWidth > 1 && Boolean(img.currentSrc || img.src)
           );
           const hasSvg = Boolean(el.querySelector('svg:not([class*="skeleton" i])'));
+          const nestedMethodTiles = el.querySelectorAll(
+            '[data-testid^="deposit-method-"], .t-fund-payment-method__grid-item, [class*="payment-method__grid-item" i]'
+          ).length;
           return {
             testId,
             className,
@@ -1143,11 +1152,15 @@ async function collectPaymentMethods(container) {
             disabled,
             ariaBusy,
             meaningfulGraphic: loadedImage || hasSvg,
+            nestedMethodTiles,
           };
         })
         .catch(() => null);
       if (!meta || meta.disabled || meta.ariaBusy) continue;
       if (meta.width < 70 || meta.height < 28) continue;
+      // A section/grid wrapper can match the broad class selector and contain
+      // every real method. Clicking it produces a false method timeout.
+      if (meta.nestedMethodTiles > 1) continue;
       const labelRaw =
         meta.imgAlt || meta.text || meta.ariaLabel || meta.title || meta.testId || meta.className;
       const label = labelRaw ? labelRaw.replace(/\s+/g, ' ').trim() : `payment-method-${i + 1}`;

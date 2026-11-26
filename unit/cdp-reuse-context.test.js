@@ -50,6 +50,34 @@ test('replaces application cookies while preserving current Cloudflare clearance
   assert.equal(cookies.find((item) => item.name === 'cf_clearance').value, 'cf_clearance-value');
 });
 
+test('empty guest state clears app auth but keeps Cloudflare clearance', async () => {
+  let cookies = [
+    cookie('cf_clearance'),
+    cookie('__cf_bm'),
+    cookie('auth._token.local', 'booms.bet'),
+  ];
+  const context = {
+    cookies: async () => cookies,
+    clearCookies: async (filter = {}) => {
+      cookies = cookies.filter(
+        (item) =>
+          !(
+            (!filter.name || item.name === filter.name) &&
+            (!filter.domain || item.domain === filter.domain) &&
+            (!filter.path || item.path === filter.path)
+          )
+      );
+    },
+    addCookies: async (items) => {
+      cookies.push(...items);
+    },
+  };
+
+  await replaceApplicationCookies(context, { cookies: [], origins: [] });
+
+  assert.deepEqual(cookies.map((item) => item.name).sort(), ['__cf_bm', 'cf_clearance']);
+});
+
 test('CDP browser facade never closes the supervisor-owned browser', async () => {
   let browserClosed = false;
   const browser = {

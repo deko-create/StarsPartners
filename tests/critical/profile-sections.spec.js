@@ -1901,10 +1901,11 @@ async function openRoute(page, route, options = {}) {
     .catch(() => null);
   await dismissOverlays(page);
 
-  if (/^\/profile\/details\/?$/i.test(route)) {
-    const profileSurface = await waitForAnyVisible(
-      page,
-      [
+  const protectedSurfaceChecks = [
+    {
+      route: /^\/profile\/details\/?$/i,
+      name: 'Profile details',
+      selectors: [
         'main input[name*="first" i]',
         'main input[name*="email" i]',
         'main input[name*="phone" i]',
@@ -1912,10 +1913,63 @@ async function openRoute(page, route, options = {}) {
         '.account-edit-form__input input',
         'form:has(.account-edit-form__input)',
       ],
-      12000
-    );
-    if (!profileSurface && !navigationError) {
-      readinessError = `Profile details content did not become ready at ${page.url()}.`;
+    },
+    {
+      route: /^\/profile\/security\/?$/i,
+      name: 'Profile security',
+      selectors: [
+        'main input[type="password"]',
+        'main form:has(input[type="password"])',
+        'main button:has-text("Password")',
+        'main button:has-text("Passwort")',
+        'main :text-matches("security|password|sicherheit|passwort", "i")',
+      ],
+    },
+    {
+      route: /^\/profile\/?$/i,
+      name: 'Profile',
+      selectors: [
+        'main input[type="file"]',
+        'main [class*="avatar" i]',
+        'main [class*="profile" i]',
+        'main nav a[href*="/profile/"]',
+      ],
+    },
+    {
+      route: /^\/referral\/?$/i,
+      name: 'Referral',
+      selectors: [
+        'main [data-testid*="referral" i]',
+        'main [class*="referral" i]',
+        'main :text-matches("referral|invite|campaign|empfehlung|kampagne", "i")',
+      ],
+    },
+    {
+      route: /^\/assets\/?$/i,
+      name: 'Assets',
+      selectors: [
+        'main [class*="wallet" i]',
+        'main [class*="balance" i]',
+        'main button:has-text("Deposit")',
+        'main button:has-text("Withdraw")',
+      ],
+    },
+    {
+      route: /^\/transactions\/?$/i,
+      name: 'Transactions',
+      selectors: [
+        'main [class*="transaction" i]',
+        'main [class*="history" i]',
+        'main table',
+        'main input[type="date"]',
+      ],
+    },
+  ];
+  const protectedSurfaceCheck = protectedSurfaceChecks.find((entry) => entry.route.test(route));
+  if (protectedSurfaceCheck && routeMatched && !loginVisible) {
+    const protectedSurface = await waitForAnyVisible(page, protectedSurfaceCheck.selectors, 12000);
+    if (!protectedSurface && !navigationError) {
+      readinessError = `Expected authorized session target page ${route} to render the ${protectedSurfaceCheck.name} surface at ${page.url()}.`;
     }
   }
 

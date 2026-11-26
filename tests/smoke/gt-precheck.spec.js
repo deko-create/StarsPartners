@@ -61,11 +61,20 @@ test('GT Precheck: no Cloudflare/403 on critical resources', async ({ page }, te
 
   await dismissOverlays(page);
 
-  const appRoot = page.locator('#app, #__nuxt').first();
+  const appRoot = page
+    .locator('#app:visible, #__nuxt:visible, main:visible, [role="main"]:visible')
+    .first();
   try {
     await appRoot.waitFor({ state: 'visible', timeout: 30000 });
   } catch {
-    if (maybeBlockPrecheck(testInfo, 'PRECHECK_BLOCKED: App root not visible (possible WAF/403).'))
+    const healthyFallback = await page
+      .locator('header:visible, nav:visible, a[href]:visible, button:visible')
+      .count()
+      .catch(() => 0);
+    if (
+      healthyFallback < 2 &&
+      maybeBlockPrecheck(testInfo, 'PRECHECK_BLOCKED: App root not visible (possible WAF/403).')
+    )
       return;
   }
 

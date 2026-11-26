@@ -4338,7 +4338,8 @@ async function runSingleProviderGameCheck(
       clickedCount: 0,
     };
     let controlsDiagnostic = { value: emptyControls, timedOut: false, reason: '' };
-    if (health.surfaceVisible) {
+    const iframeSurfaceVisible = Boolean(launch.iframeVisible);
+    if (health.surfaceVisible || iframeSurfaceVisible) {
       const controlRoot = resolveGameControlRoot(targetPage, health.surfaceMeta);
       const controlsTimeoutMs = Math.max(
         2000,
@@ -4364,7 +4365,7 @@ async function runSingleProviderGameCheck(
     const controls = controlsDiagnostic.value;
     const diagnostics = splitCriticalDiagnostics(collector.diagnostics);
 
-    game.gameSurface = health.surfaceVisible ? 'visible' : 'not-visible';
+    game.gameSurface = health.surfaceVisible || iframeSurfaceVisible ? 'visible' : 'not-visible';
     game.controlsClicked = controls.clickedCount;
     game.detectedControls = controls.detectedLabels.slice(0, 20);
     game.clickedControls = controls.clickedLabels;
@@ -4409,11 +4410,18 @@ async function runSingleProviderGameCheck(
     }
 
     const launchLooksValid = launch.launched || launch.balanceGateVisible;
-    const strongSurface = Boolean(launch.balanceGateVisible || health.surfaceVisible);
+    // The launch observer sees the provider iframe at the moment it appears.
+    // Some providers later replace or sandbox it so the generic health probe
+    // cannot rediscover it. That observed visible iframe is still strong,
+    // direct launch evidence and must not be downgraded to a weak surface.
+    const strongSurface = Boolean(
+      launch.balanceGateVisible || health.surfaceVisible || iframeSurfaceVisible
+    );
     const weakSurface =
       Boolean(launch.launched) &&
       !launch.balanceGateVisible &&
       !health.surfaceVisible &&
+      !iframeSurfaceVisible &&
       !health.errorVisible &&
       !health.challenge;
     const healthLooksValid = strongSurface || weakSurface;

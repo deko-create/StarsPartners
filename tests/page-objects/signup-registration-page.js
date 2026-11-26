@@ -37,6 +37,7 @@ function debugSignup(message) {
 }
 
 const CONTINUE_BUTTON_SELECTORS = [
+  '[data-testid="register-button"]',
   'button:has-text("CONTINUE")',
   'button:has-text("Continue")',
   'button:has-text("Продолжить")',
@@ -147,7 +148,10 @@ class SignupRegistrationPage {
       try {
         if (await checkbox.isVisible({ timeout: 350 })) {
           await checkbox.click({ timeout: 3000 });
-          return;
+          const input = checkbox.locator('input[type="checkbox"]').first();
+          if (await input.isChecked().catch(() => false)) return;
+          await input.click({ timeout: 1500, force: true }).catch(() => null);
+          if (await input.isChecked().catch(() => false)) return;
         }
       } catch {
         // ignore
@@ -955,6 +959,7 @@ class SignupRegistrationPage {
 
   async findFinalSignupButton() {
     return this.findActionButton([
+      '[data-testid="register-button"]',
       'button:has-text("SIGN UP")',
       'button:has-text("Sign Up")',
       'button:has-text("Create")',
@@ -1030,6 +1035,42 @@ class SignupRegistrationPage {
     return selected;
   }
 
+  async resolvePhoneValueForActiveMask(phone, annotate) {
+    const phoneInput = this.getContainer()
+      .locator(
+        'input[type="tel"]:visible, input[name="phone"]:visible, input[placeholder*="Phone" i]:visible'
+      )
+      .first();
+    if (!(await phoneInput.isVisible({ timeout: 500 }).catch(() => false))) return phone;
+
+    const maskState = await phoneInput
+      .evaluate((node) => {
+        const root = node.closest('.t-phone-mask-input');
+        const flag = root ? root.querySelector('[class*="t-flag-"]') : null;
+        const flagClass = flag ? String(flag.className || '') : '';
+        const flagCode = flagClass.match(/(?:^|\s)t-flag-([a-z]{2})(?:\s|$)/i)?.[1] || '';
+        return { value: node.value || '', flagCode: flagCode.toLowerCase() };
+      })
+      .catch(() => ({ value: '', flagCode: '' }));
+
+    const configured = String(phone || '');
+    const digits = configured.replace(/\D+/g, '');
+    const prefix = String(maskState.value || '').match(/^\+\d{1,3}/)?.[0] || '';
+    let resolved = configured;
+
+    if ((maskState.flagCode === 'fi' || prefix === '+358') && !digits.startsWith('358')) {
+      resolved = '+358501234567';
+    }
+
+    if (resolved !== configured) {
+      this.addNote(
+        annotate,
+        `Signup phone adapted to the active ${prefix || maskState.flagCode.toUpperCase()} mask.`
+      );
+    }
+    return resolved;
+  }
+
   async fillStep1(data, opts = {}) {
     debugSignup('fillStep1:start');
     const { annotate, errorToast, signupTab } = opts;
@@ -1081,9 +1122,10 @@ class SignupRegistrationPage {
     // Some brands render registration as a single step and require the phone
     // before the same submit button can become actionable.
     await this.selectPhoneCountryIfPresent(data.country, annotate);
+    const phoneValue = await this.resolvePhoneValueForActiveMask(data.phone, annotate);
     await this.fillFirstVisible(
       ['input[type="tel"]', 'input[name="phone"]', 'input[placeholder*="Phone" i]'],
-      data.phone
+      phoneValue
     );
     await container
       .locator(

@@ -1098,28 +1098,18 @@ async function waitForLiveChatFrame(page, timeoutMs = 20_000) {
 function getLanguageOptionLocator(page) {
   return page
     .locator(
-      '.t-dropdown__item-option, [role="option"], [role="menuitem"], .t-select__option, .t-dropdown__item'
+      '.t-dropdown__item-option, [role="option"], [role="menuitem"], .t-select__option, .t-dropdown__item, [data-testid="sidebar-lang-selector"] *'
     )
     .filter({ hasText: LANGUAGE_LABEL_PATTERN });
 }
 
 async function countVisibleLanguageOptions(page) {
-  return getLanguageOptionLocator(page)
-    .evaluateAll(
-      (nodes) =>
-        nodes.filter((node) => {
-          const style = window.getComputedStyle(node);
-          if (!style || style.display === 'none' || style.visibility === 'hidden') return false;
-          const rect = node.getBoundingClientRect();
-          return rect.width > 2 && rect.height > 2;
-        }).length
-    )
-    .catch(() => 0);
+  return (await collectLanguageOptions(page)).length;
 }
 
 async function collectLanguageOptions(page) {
   return getLanguageOptionLocator(page)
-    .evaluateAll((nodes) => {
+    .evaluateAll((nodes, languagePatternSource) => {
       function isVisible(node) {
         const style = window.getComputedStyle(node);
         if (!style || style.display === 'none' || style.visibility === 'hidden') return false;
@@ -1127,18 +1117,21 @@ async function collectLanguageOptions(page) {
         return rect.width > 2 && rect.height > 2;
       }
 
+      const languagePattern = new RegExp(languagePatternSource, 'i');
       const seen = new Set();
       return nodes
         .filter((node) => isVisible(node))
         .map((node) => (node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim())
         .filter((text) => {
           const normalized = String(text || '').toLowerCase();
-          if (!normalized || seen.has(normalized)) return false;
+          if (!normalized || seen.has(normalized) || !languagePattern.test(text)) return false;
+          const matches = text.match(new RegExp(languagePatternSource, 'gi')) || [];
+          if (matches.length !== 1 || text.length > 40) return false;
           seen.add(normalized);
           return true;
         })
         .map((text) => ({ text }));
-    })
+    }, LANGUAGE_LABEL_PATTERN.source)
     .then((items) =>
       items.map((item) => ({
         text: item.text,
@@ -1150,12 +1143,12 @@ async function collectLanguageOptions(page) {
 
 async function openLanguageDropdown(page, trigger) {
   let visibleCount = await countVisibleLanguageOptions(page);
-  if (!visibleCount) {
+  if (visibleCount < 2) {
     await clickAndWait(page, trigger);
     await waitForUiSettled(page, 1200);
     visibleCount = await countVisibleLanguageOptions(page);
   }
-  if (!visibleCount) {
+  if (visibleCount < 2) {
     await clickAndWait(page, trigger);
     await waitForUiSettled(page, 1400);
   }
@@ -1603,9 +1596,9 @@ async function runCheck(page, item, checkOptions = {}) {
     result.frameSources = await collectFrameSources(page);
     let hasLiveChatFrame =
       result.frameSources.some((source) => LIVE_CHAT_FRAME_URL_RE.test(source)) ||
-      Boolean(await waitForLiveChatFrame(page, 10_000));
+      Boolean(await waitForLiveChatFrame(page, 30_000));
     const started = Date.now();
-    while (!hasLiveChatFrame && Date.now() - started < 10_000) {
+    while (!hasLiveChatFrame && Date.now() - started < 8_000) {
       const challenge = await getChallengeReason(page);
       if (challenge) {
         result.status = 'blocked';
@@ -2197,7 +2190,7 @@ test.describe('Sidebar Matrix', () => {
         markBlocked(testInfo, payload.reason);
         return;
       }
-      const activeFrame = await waitForLiveChatFrame(page, 22_000);
+      const activeFrame = await waitForLiveChatFrame(page, 35_000);
       payload.afterFirstFrames = await collectLiveChatFrameMeta(page);
       payload.activeFrameDetected = Boolean(activeFrame);
 

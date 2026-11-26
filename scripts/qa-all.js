@@ -1097,6 +1097,8 @@ function collectTestsFromSuites(suites) {
             ),
           ];
           tests.push({
+            id: String(t.id || spec.id || spec.title || '').trim(),
+            title: String(spec.title || '').trim(),
             status: final.status || t.status || 'unknown',
             annotations: mergedAnnotations,
           });
@@ -1111,6 +1113,32 @@ function collectTestsFromSuites(suites) {
 
   for (const suite of suites || []) walkSuite(suite);
   return tests;
+}
+
+function writeAggregateLastRun(runStatus) {
+  const failedTests = new Set();
+  for (const reportPath of Object.values(phaseReportPaths)) {
+    const payload = readJson(reportPath);
+    if (!payload) continue;
+    for (const item of collectTestsFromSuites(payload.suites || [])) {
+      if (!failureStatuses.has(String(item.status || ''))) continue;
+      if (item.id) failedTests.add(item.id);
+    }
+  }
+
+  fs.mkdirSync(reportDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(reportDir, '.last-run.json'),
+    JSON.stringify(
+      {
+        status: runStatus === 'PASSED' ? 'passed' : 'failed',
+        failedTests: [...failedTests],
+      },
+      null,
+      2
+    ),
+    'utf8'
+  );
 }
 
 function summarizePhaseReport(filePath) {
@@ -2082,6 +2110,7 @@ async function runSuiteWithRetry({
       testInfraTimeoutRun: failureClass.testInfraTimeoutRun,
       kpi,
     });
+    writeAggregateLastRun(runStatus);
     const history = captureRunHistory({
       baseUrl,
       runStatus,
@@ -2235,7 +2264,11 @@ async function runSuiteWithRetry({
       console.log('\n⚠️  Precheck blocked and CI mode is enabled. Skipping storageState refresh.');
     }
 
-    if (precheck.code !== 0 && preferWebkitOnCloudflare) {
+    if (
+      precheck.code !== 0 &&
+      preferWebkitOnCloudflare &&
+      process.env.PW_CDP_REUSE_CONTEXT !== '1'
+    ) {
       const webkitPrecheckArgs = buildPlaywrightArgs(precheckTests);
       console.log(
         '\n⚠️  Chromium precheck still blocked after storage refresh. Trying WebKit precheck...'
@@ -2694,6 +2727,7 @@ async function runSuiteWithRetry({
     testInfraTimeoutRun: failureClass.testInfraTimeoutRun,
     kpi,
   });
+  writeAggregateLastRun(runStatus);
   const history = captureRunHistory({
     baseUrl,
     runStatus,

@@ -754,8 +754,14 @@ test('Log In flow: auth request is handled correctly', async ({ browser }, testI
   const mobileRun = isMobileProjectRun(testInfo);
   test.setTimeout(mobileRun ? 150000 : 180000);
   // Login must start as a guest even when the matrix run supplies a shared
-  // authorized storage state for downstream account and casino checks.
-  const context = await browser.newContext(resolveMatrixContextOptions());
+  // authorized storage state for downstream account and casino checks. An
+  // explicit empty state is also required by the CDP reuse facade: it clears
+  // application auth while deliberately retaining verified Cloudflare cookies.
+  const context = await browser.newContext(
+    resolveMatrixContextOptions({
+      storageState: { cookies: [], origins: [] },
+    })
+  );
   const page = await context.newPage();
   const wafProbe = createWafProbe(page);
   const authResponses = [];

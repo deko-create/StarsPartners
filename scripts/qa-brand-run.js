@@ -390,11 +390,16 @@ function buildRunEnv({ brand, mode, cwd, runProfile }) {
     // external login.booms.now OIDC UI, so its legacy /api/auth/signup endpoint
     // is no longer a valid first choice either.
     PW_SIGNUP_PREFER_API:
-      process.env.PW_SIGNUP_PREFER_API || (['gt', 'booms'].includes(brand.key) ? '0' : '1'),
-    // CDP Turnstile fallback targets the legacy same-origin signup endpoint.
-    // Do not spend the Booms registration budget on it now that signup is OIDC.
-    PW_SIGNUP_CDP_FALLBACK: process.env.PW_SIGNUP_CDP_FALLBACK || '0',
-    PW_SIGNUP_UI_TIMEOUT_MS: process.env.PW_SIGNUP_UI_TIMEOUT_MS || '150000',
+      process.env.PW_SIGNUP_PREFER_API ||
+      (['gt', 'booms', 'casho'].includes(brand.key) ? '0' : '1'),
+    // When the run already owns a native-Chrome CDP session, reuse that exact
+    // context for Turnstile-protected signup. It preserves the user's verified
+    // Cloudflare cookies instead of opening another untrusted browser profile.
+    // Booms uses external OIDC signup, so its legacy same-origin fallback stays off.
+    PW_SIGNUP_CDP_FALLBACK:
+      process.env.PW_SIGNUP_CDP_FALLBACK || (useCdpReuse && brand.key !== 'booms' ? '1' : '0'),
+    PW_SIGNUP_CDP_TIMEOUT_MS: process.env.PW_SIGNUP_CDP_TIMEOUT_MS || '45000',
+    PW_SIGNUP_UI_TIMEOUT_MS: process.env.PW_SIGNUP_UI_TIMEOUT_MS || '90000',
     PW_USER_AGENT: process.env.PW_USER_AGENT || cdpMetaUserAgent || '',
     PW_MOBILE_STABILIZE_RERUN: process.env.PW_MOBILE_STABILIZE_RERUN || '0',
     PW_SUITE_REFRESH_MAX:
@@ -445,6 +450,7 @@ function buildRunEnv({ brand, mode, cwd, runProfile }) {
   // the precheck test itself and the clean-precheck KPI to use the same semantics.
   if (env.PW_PRECHECK_SOFT === '1') {
     env.PW_PRECHECK_SOFT_BLOCK = process.env.PW_PRECHECK_SOFT_BLOCK || '1';
+    env.PW_PRECHECK_STRICT_403 = process.env.PW_PRECHECK_STRICT_403 || '0';
     env.PW_KPI_REQUIRE_CLEAN_PRECHECK = process.env.PW_KPI_REQUIRE_CLEAN_PRECHECK || '0';
   }
 
@@ -466,6 +472,7 @@ function buildRunEnv({ brand, mode, cwd, runProfile }) {
     if (isHighCloudflareBrand) {
       env.PW_PRECHECK_SOFT = process.env.PW_PRECHECK_SOFT || '1';
       env.PW_PRECHECK_SOFT_BLOCK = process.env.PW_PRECHECK_SOFT_BLOCK || '1';
+      env.PW_PRECHECK_STRICT_403 = process.env.PW_PRECHECK_STRICT_403 || '0';
       env.PW_KPI_REQUIRE_CLEAN_PRECHECK = process.env.PW_KPI_REQUIRE_CLEAN_PRECHECK || '0';
       env.PW_SAVE_STATE_TIMEOUT =
         process.env.PW_SAVE_STATE_TIMEOUT || sessionDefaults.saveStateTimeout;
@@ -475,6 +482,7 @@ function buildRunEnv({ brand, mode, cwd, runProfile }) {
   } else if (DESKTOP_SOFT_PRECHECK_BRANDS.has(brand.key)) {
     env.PW_PRECHECK_SOFT = process.env.PW_PRECHECK_SOFT || '1';
     env.PW_PRECHECK_SOFT_BLOCK = process.env.PW_PRECHECK_SOFT_BLOCK || '1';
+    env.PW_PRECHECK_STRICT_403 = process.env.PW_PRECHECK_STRICT_403 || '0';
     env.PW_KPI_REQUIRE_CLEAN_PRECHECK = process.env.PW_KPI_REQUIRE_CLEAN_PRECHECK || '0';
     env.PW_SAVE_STATE_WARMUP_TIMEOUT =
       process.env.PW_SAVE_STATE_WARMUP_TIMEOUT || sessionDefaults.saveStateWarmupTimeout;
